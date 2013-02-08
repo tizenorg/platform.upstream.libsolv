@@ -1,11 +1,10 @@
 Name:           libsolv
 Version:        0.2.4
 Release:        0
-Url:            git://gitorious.org/opensuse/libsolv.git
+Url:            https://github.com/openSUSE/libsolv
 Source:         libsolv-%{version}.tar.bz2
 
 %bcond_without enable_static
-%bcond_without disable_shared
 %bcond_without perl_binding
 %bcond_without python_binding
 
@@ -29,27 +28,16 @@ BuildRequires:  swig
 
 Summary:        A new approach to package dependency solving
 License:        BSD-3-Clause
-Group:          Development/Libraries/C and C++
+Group:          System/Libraries
 
 %description
-A new approach to package dependency solving
+A new approach to package dependency solving.
 
-%if !%{with disable_shared}
-%package -n libsolv
-Summary:        A new approach to package dependency solving
-Group:          Development/Libraries/C and C++
-
-%description -n libsolv
-A new approach to package dependency solving
-
-%endif
 %package devel
 Summary:        A new approach to package dependency solving
-Group:          Development/Libraries/C and C++
+Group:          Development/Libraries
 Requires:       libsolv-tools = %version
-%if !%{with disable_shared}
 Requires:       libsolv = %version
-%endif
 Requires:       rpm-devel
 
 %description devel
@@ -57,7 +45,7 @@ Development files for libsolv, a new approach to package dependency solving
 
 %package tools
 Summary:        A new approach to package dependency solving
-Group:          Development/Libraries/C and C++
+Group:          Development/Libraries
 Obsoletes:      satsolver-tools < 0.18
 Provides:       satsolver-tools = 0.18
 Requires:       gzip bzip2 coreutils findutils
@@ -69,22 +57,14 @@ A new approach to package dependency solving.
 Summary:        Applications demoing the libsolv library
 Group:          System/Management
 Requires:       curl
-%if 0%{?fedora_version} || 0%{?rhel_version} >= 600 || 0%{?centos_version} >= 600
-Requires:       gnupg2
-%endif
-%if 0%{?suse_version}
-Requires:       gpg2
-%endif
 
 %description demo
 Applications demoing the libsolv library.
 
 %package -n python-solv
-%if 0%{?py_requires:1}
-%py_requires
-%endif
+Requires:       python
 Summary:        Python bindings for the libsolv library
-Group:          Development/Languages/Python
+Group:          Platfrom Development/Python
 
 %description -n python-solv
 Python bindings for sat solver.
@@ -92,7 +72,7 @@ Python bindings for sat solver.
 %package -n perl-solv
 Requires:       perl = %{perl_version}
 Summary:        Perl bindings for the libsolv library
-Group:          Development/Languages/Perl
+Group:          Platfrom Development/Perl
 
 %description -n perl-solv
 Perl bindings for sat solver.
@@ -113,7 +93,6 @@ cmake   $CMAKE_FLAGS \
 	-DCMAKE_VERBOSE_MAKEFILE=TRUE \
 	-DCMAKE_BUILD_TYPE=RelWithDebInfo \
 	%{?with_enable_static:-DENABLE_STATIC=1} \
-	%{?with_disable_shared:-DDISABLE_SHARED=1} \
 	%{?with_perl_binding:-DENABLE_PERL=1} \
 	%{?with_python_binding:-DENABLE_PYTHON=1} \
 	-DUSE_VENDORDIRS=1 \
@@ -131,27 +110,19 @@ popd
 # we want to leave the .a file untouched
 export NO_BRP_STRIP_DEBUG=true
 
-%clean
-rm -rf "$RPM_BUILD_ROOT"
+%post  -p /sbin/ldconfig
 
-%if !%{with disable_shared}
-%post -n libsolv -p /sbin/ldconfig
+%postun  -p /sbin/ldconfig
 
-%postun -n libsolv -p /sbin/ldconfig
-
-%files -n libsolv
+%files 
 %defattr(-,root,root)
-%doc LICENSE*
+%license LICENSE*
 %{_libdir}/libsolv.so.*
 %{_libdir}/libsolvext.so.*
-%endif
 
 %files tools
 %defattr(-,root,root)
-%if 0%{?suse_version}
-%exclude %{_bindir}/helix2solv
-%endif
-%exclude %{_bindir}/solv
+%{_bindir}/solv
 %{_bindir}/*
 
 %files devel
@@ -165,9 +136,7 @@ rm -rf "$RPM_BUILD_ROOT"
 %{_libdir}/libsolvext.so
 %endif
 %{_includedir}/solv
-%if 0%{?suse_version}
 %{_bindir}/helix2solv
-%endif
 %{_datadir}/cmake/Modules/*
 
 %files demo
