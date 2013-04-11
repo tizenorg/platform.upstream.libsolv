@@ -1,3 +1,6 @@
+* Thu Apr 11 2013 Anas Nashif <anas.nashif@intel.com> BASE-SuSE-Code-12_1-Branch@e3eb541
+- Update to 0.3.0
+
 * Thu Feb 07 2013 Anas Nashif <anas.nashif@intel.com> submit/trunk/20130208.042515@708ff66
 - Cleanup spec per rpmlint
 
