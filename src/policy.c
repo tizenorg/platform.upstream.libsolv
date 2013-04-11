@@ -601,11 +601,6 @@ prune_to_best_version(Pool *pool, Queue *plist)
 static void
 prune_best_arch_name_version(const Solver *solv, Pool *pool, Queue *plist)
 {
-  if (solv && solv->bestSolvableCb)
-    { /* The application is responsible for */
-      return solv->bestSolvableCb(solv->pool, plist);
-    }
-
   if (plist->count > 1)
     prune_to_best_arch(pool, plist);
   if (plist->count > 1)
@@ -675,11 +670,6 @@ policy_illegal_archchange(Solver *solv, Solvable *s1, Solvable *s2)
   Pool *pool = solv->pool;
   Id a1 = s1->arch, a2 = s2->arch;
 
-  if (solv && solv->archCheckCb)
-    { /* The application is responsible for */
-      return solv->archCheckCb(solv->pool, s1, s2);
-    }
-
   /* we allow changes to/from noarch */
   if (a1 == a2 || a1 == pool->noarchid || a2 == pool->noarchid)
     return 0;
@@ -701,10 +691,9 @@ policy_illegal_vendorchange(Solver *solv, Solvable *s1, Solvable *s2)
   Id v1, v2;
   Id vendormask1, vendormask2;
 
-  if (solv->vendorCheckCb)
-   {   /* The application is responsible for */
-     return solv->vendorCheckCb(pool, s1, s2);
-   }
+  if (pool->custom_vendorcheck)
+     return pool->custom_vendorcheck(pool, s1, s2);
+
   /* treat a missing vendor as empty string */
   v1 = s1->vendor ? s1->vendor : ID_EMPTY;
   v2 = s2->vendor ? s2->vendor : ID_EMPTY;
@@ -768,6 +757,8 @@ policy_create_obsolete_index(Solver *solv)
   Id p, pp, obs, *obsp, *obsoletes, *obsoletes_data;
   int i, n, cnt;
 
+  solv->obsoletes = solv_free(solv->obsoletes);
+  solv->obsoletes_data = solv_free(solv->obsoletes_data);
   if (!installed || installed->start == installed->end)
     return;
   cnt = installed->end - installed->start;
@@ -866,11 +857,6 @@ policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allow_all)
     }
 
   queue_empty(qs);
-
-  if (solv && solv->updateCandidateCb)
-    { /* The application is responsible for */
-      return solv->updateCandidateCb(solv->pool, s, qs);
-    }
 
   n = s - pool->solvables;
 

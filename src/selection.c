@@ -121,7 +121,7 @@ selection_flatten(Pool *pool, Queue *selection)
 {
   Queue q;
   int i;
-  if (selection->count <= 1)
+  if (selection->count <= 2)
     return;
   for (i = 0; i < selection->count; i += 2)
     if ((selection->elements[i] & SOLVER_SELECTMASK) == SOLVER_SOLVABLE_ALL)
@@ -155,6 +155,7 @@ static void
 selection_filter_rel(Pool *pool, Queue *selection, Id relflags, Id relevr)
 {
   int i;
+
   for (i = 0; i < selection->count; i += 2)
     {
       Id select = selection->elements[i] & SOLVER_SELECTMASK;
@@ -196,7 +197,7 @@ selection_filter_rel(Pool *pool, Queue *selection, Id relflags, Id relevr)
 	    }
 	  queue_free(&q);
 	}
-      else if (select == SOLVER_SOLVABLE_NAME && select == SOLVER_SOLVABLE_PROVIDES)
+      else if (select == SOLVER_SOLVABLE_NAME || select == SOLVER_SOLVABLE_PROVIDES)
 	{
 	  /* don't stack src reldeps */
 	  if (relflags == REL_ARCH && (relevr == ARCH_SRC || relevr == ARCH_NOSRC) && ISRELDEP(id))
@@ -245,7 +246,11 @@ selection_addsrc(Pool *pool, Queue *selection, int flags)
 	  if (s->name != name)
 	    continue;
 	  if (s->arch == ARCH_SRC || s->arch == ARCH_NOSRC)
-	    havesrc = 1;
+	    {
+	      if (pool_disabled_solvable(pool, s))
+		continue;
+	      havesrc = 1;
+	    }
 	  else if (s->repo != pool->installed && !pool_installable(pool, s))
 	    continue;
 	  queue_push(&q, p);
@@ -316,6 +321,8 @@ selection_depglob(Pool *pool, Queue *selection, const char *name, int flags)
 		    {
 		      if ((flags & SELECTION_INSTALLED_ONLY) != 0 && s->repo != pool->installed)
 			continue;	/* just in case... src rpms can't be installed */
+		      if (pool_disabled_solvable(pool, s))
+			continue;
 		      if ((flags & SELECTION_SOURCE_ONLY) != 0)
 		        id = pool_rel2id(pool, id, ARCH_SRC, REL_ARCH, 1);
 		      queue_push2(selection, SOLVER_SOLVABLE_NAME, id);
@@ -377,8 +384,12 @@ selection_depglob(Pool *pool, Queue *selection, const char *name, int flags)
         {
           Solvable *s = pool->solvables + p;
           if (s->repo != pool->installed && !pool_installable(pool, s))
-	    if (!(flags & SELECTION_SOURCE_ONLY) || (s->arch != ARCH_SRC && s->arch != ARCH_NOSRC))
-              continue;
+	    {
+	      if (!(flags & SELECTION_SOURCE_ONLY) || (s->arch != ARCH_SRC && s->arch != ARCH_NOSRC))
+                continue;
+	      if (pool_disabled_solvable(pool, s))
+		continue;
+	    }
 	  if ((flags & SELECTION_INSTALLED_ONLY) != 0 && s->repo != pool->installed)
 	    continue;
           id = s->name;
@@ -476,8 +487,12 @@ selection_filelist(Pool *pool, Queue *selection, const char *name, int flags)
       if (!s->repo)
 	continue;
       if (s->repo != pool->installed && !pool_installable(pool, s))
-	if (!(flags & SELECTION_SOURCE_ONLY) || (s->arch != ARCH_SRC && s->arch != ARCH_NOSRC))
-	  continue;
+	{
+	  if (!(flags & SELECTION_SOURCE_ONLY) || (s->arch != ARCH_SRC && s->arch != ARCH_NOSRC))
+	    continue;
+	  if (pool_disabled_solvable(pool, s))
+	    continue;
+	}
       if ((flags & SELECTION_INSTALLED_ONLY) != 0 && s->repo != pool->installed)
 	continue;
       queue_push(&q, di.solvid);
@@ -722,7 +737,8 @@ selection_make(Pool *pool, Queue *selection, const char *name, int flags)
     ret = selection_depglob_arch(pool, selection, name, flags);
   if (!ret && (flags & SELECTION_CANON) != 0)
     ret = selection_canon(pool, selection, name, flags);
-
+  if (ret && !selection->count)
+    ret = 0;	/* no match -> always return zero */
   if (ret && (flags & SELECTION_FLAT) != 0)
     selection_flatten(pool, selection);
   return ret;

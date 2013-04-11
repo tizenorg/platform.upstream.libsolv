@@ -758,6 +758,8 @@ pool_addrelproviders(Pool *pool, Id d)
 		    continue;
 		  if (s->arch != evr && s->arch != ARCH_NOSRC)
 		    continue;
+		  if (pool_disabled_solvable(pool, s))
+		    continue;
 		  if (pool_match_nevr(pool, s, name))
 		    queue_push(&plist, p);
 		}
@@ -2096,6 +2098,39 @@ pool_lookup_deltalocation(Pool *pool, Id entry, unsigned int *medianrp)
   return loc;
 }
 
+static void
+add_new_provider(Pool *pool, Id id, Id p)
+{
+  Queue q;
+  Id *pp;
+
+  while (ISRELDEP(id))
+    {
+      Reldep *rd = GETRELDEP(pool, id);
+      id = rd->name;
+    }
+
+  queue_init(&q);
+  for (pp = pool->whatprovidesdata + pool->whatprovides[id]; *pp; pp++)
+    {
+      if (*pp == p)
+	{
+	  queue_free(&q);
+	  return;
+	}
+      if (*pp > p)
+	{
+	  queue_push(&q, p);
+	  p = 0;
+	}
+      queue_push(&q, *pp);
+    }
+  if (p)
+    queue_push(&q, p);
+  pool->whatprovides[id] = pool_queuetowhatprovides(pool, &q);
+  queue_free(&q);
+}
+
 void
 pool_add_fileconflicts_deps(Pool *pool, Queue *conflicts)
 {
@@ -2107,7 +2142,6 @@ pool_add_fileconflicts_deps(Pool *pool, Queue *conflicts)
 
   if (!conflicts->count)
     return;
-  pool_freewhatprovides(pool);
   for (i = 0; i < conflicts->count; i += 5)
     {
       fn = conflicts->elements[i];
@@ -2119,6 +2153,10 @@ pool_add_fileconflicts_deps(Pool *pool, Queue *conflicts)
       if (!s->repo)
 	continue;
       s->provides = repo_addid_dep(s->repo, s->provides, id, SOLVABLE_FILEMARKER);
+      if (pool->whatprovides)
+	add_new_provider(pool, fn, p);
+      if (pool->whatprovides_rel)
+	pool->whatprovides_rel[GETRELID(id)] = 0;	/* clear cache */
       s = pool->solvables + q;
       if (!s->repo)
 	continue;
@@ -2159,6 +2197,13 @@ const char *
 pool_get_rootdir(Pool *pool)
 {
   return pool->rootdir;
+}
+
+/* only used in libzypp */
+void
+pool_set_custom_vendorcheck(Pool *pool, int (*vendorcheck)(Pool *, Solvable *, Solvable *))
+{
+  pool->custom_vendorcheck = vendorcheck;
 }
 
 /* EOF */
