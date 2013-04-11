@@ -1,5 +1,5 @@
 Name:           libsolv
-Version:        0.2.4
+Version:        0.3.0
 Release:        0
 Url:            https://github.com/openSUSE/libsolv
 Source:         libsolv-%{version}.tar.bz2
@@ -28,7 +28,7 @@ BuildRequires:  swig
 
 Summary:        A new approach to package dependency solving
 License:        BSD-3-Clause
-Group:          System/Libraries
+Group:          System/Package Management
 
 %description
 A new approach to package dependency solving.
@@ -55,7 +55,7 @@ A new approach to package dependency solving.
 
 %package demo
 Summary:        Applications demoing the libsolv library
-Group:          System/Management
+Group:          System/Package Management
 Requires:       curl
 
 %description demo
