@@ -3,6 +3,7 @@ Version:        0.3.0
 Release:        0
 Url:            https://github.com/openSUSE/libsolv
 Source:         libsolv-%{version}.tar.bz2
+Source1001: 	libsolv.manifest
 
 %bcond_without enable_static
 %bcond_without perl_binding
@@ -79,6 +80,7 @@ Perl bindings for sat solver.
 
 %prep
 %setup -n libsolv-%{version}
+cp %{SOURCE1001} .
 
 %build
 export CFLAGS="$RPM_OPT_FLAGS"
@@ -115,17 +117,20 @@ export NO_BRP_STRIP_DEBUG=true
 %postun  -p /sbin/ldconfig
 
 %files 
+%manifest %{name}.manifest
 %defattr(-,root,root)
 %license LICENSE*
 %{_libdir}/libsolv.so.*
 %{_libdir}/libsolvext.so.*
 
 %files tools
+%manifest %{name}.manifest
 %defattr(-,root,root)
 %{_bindir}/solv
 %{_bindir}/*
 
 %files devel
+%manifest %{name}.manifest
 %defattr(-,root,root)
 %if %{with enable_static}
 %{_libdir}/libsolv.a
@@ -140,17 +145,20 @@ export NO_BRP_STRIP_DEBUG=true
 %{_datadir}/cmake/Modules/*
 
 %files demo
+%manifest %{name}.manifest
 %defattr(-,root,root)
 %{_bindir}/solv
 
 %if %{with perl_binding}
 %files -n perl-solv
+%manifest %{name}.manifest
 %defattr(-,root,root)
 %{perl_vendorarch}/*
 %endif
 
 %if %{with python_binding}
 %files -n python-solv
+%manifest %{name}.manifest
 %defattr(-,root,root)
 %{python_sitearch}/*
 %endif
