@@ -15,11 +15,12 @@
 
 #include "pooltypes.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* value of a hash */
 typedef unsigned int Hashval;
-/* mask for hash, used as modulo operator to ensure 'wrapping' of hash
-   values -> hash table */
-typedef unsigned int Hashmask;
 
 /* inside the hash table, Ids are stored. Hash maps: string -> hash -> Id */
 typedef Id *Hashtable;
@@ -73,10 +74,10 @@ relhash(Id name, Id evr, int flags)
 
 /* compute bitmask for value
  * returns smallest (2^n-1) > 2 * num
- * 
+ *
  * used for Hashtable 'modulo' operation
- */ 
-static inline Hashmask
+ */
+static inline Hashval
 mkmask(unsigned int num)
 {
   num *= 2;
@@ -84,5 +85,9 @@ mkmask(unsigned int num)
     num &= num - 1;
   return num * 2 - 1;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBSOLV_HASH_H */

@@ -20,7 +20,14 @@
 #include "pool.h"
 #include "repo.h"
 #include "repo_rpmdb.h"
+#ifdef ENABLE_PUBKEY
+#include "repo_pubkey.h"
+#include "solv_xfopen.h"
+#endif
 #include "repo_solv.h"
+#ifdef SUSE
+#include "repo_autopattern.h"
+#endif
 #include "common_write.h"
 
 static char *
@@ -58,8 +65,15 @@ main(int argc, char **argv)
   FILE *fp;
   char buf[4096], *p;
   const char *basefile = 0;
+#ifdef ENABLE_PUBKEY
+  int pubkeys = 0;
+#endif
+#ifdef SUSE
+  int add_auto = 0;
+#endif
+  int filtered_filelist = 0;
 
-  while ((c = getopt(argc, argv, "0b:m:")) >= 0)
+  while ((c = getopt(argc, argv, "0XkKb:m:F")) >= 0)
     {
       switch(c)
 	{
@@ -71,6 +85,22 @@ main(int argc, char **argv)
 	  break;
 	case '0':
 	  manifest0 = 1;
+	  break;
+	case 'F':
+	  filtered_filelist = 1;
+	  break;
+#ifdef ENABLE_PUBKEY
+	case 'k':
+	  pubkeys = 1;
+	  break;
+	case 'K':
+	  pubkeys = 2;
+	  break;
+#endif
+	case 'X':
+#ifdef SUSE
+	  add_auto = 1;
+#endif
 	  break;
 	default:
 	  exit(1);
@@ -115,13 +145,45 @@ main(int argc, char **argv)
   res = 0;
   for (i = 0; i < nrpms; i++)
     {
-      if (repo_add_rpm(repo, rpms[i], REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE) == 0)
+#ifdef ENABLE_PUBKEY
+      if (pubkeys == 2)
+	{
+	  FILE *fp = solv_xfopen(rpms[i], "r");
+	  if (!fp)
+	    {
+	      perror(rpms[i]);
+	      res = 1;
+	      continue;
+	    }
+	  if (repo_add_keyring(repo, fp, REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|ADD_WITH_KEYSIGNATURES))
+	    {
+	      fprintf(stderr, "rpms2solv: %s\n", pool_errstr(pool));
+	      res = 1;
+	    }
+	  fclose(fp);
+	  continue;
+	}
+      if (pubkeys)
+        {
+	  if (repo_add_pubkey(repo, rpms[i], REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|ADD_WITH_KEYSIGNATURES) == 0)
+	    {
+	      fprintf(stderr, "rpms2solv: %s\n", pool_errstr(pool));
+	      res = 1;
+	    }
+	  continue;
+        }
+#endif
+      if (repo_add_rpm(repo, rpms[i], REPO_REUSE_REPODATA|REPO_NO_INTERNALIZE|(filtered_filelist ? RPM_ADD_FILTERED_FILELIST : 0)) == 0)
 	{
 	  fprintf(stderr, "rpms2solv: %s\n", pool_errstr(pool));
 	  res = 1;
 	}
     }
   repo_internalize(repo);
+#ifdef SUSE
+  if (add_auto)
+    repo_add_autopattern(repo, 0);
+#endif
   tool_write(repo, basefile, 0);
   pool_free(pool);
   for (c = 0; c < nrpms; c++)

@@ -157,7 +157,7 @@ finishpackage(Pool *pool, Solvable *s, int keep, Queue *job)
   if (!s->evr)
     s->evr = ID_EMPTY;
   sid = pool_rel2id(pool, s->name, s->evr, REL_EQ, 1);
-  s->provides = repo_addid_dep(s->repo, s->provides, sid, 0); 
+  s->provides = repo_addid_dep(s->repo, s->provides, sid, 0);
   if (!job || !pool->installed || s->repo != pool->installed)
     return;
   if (keep == KEEP_VERSION)
@@ -177,7 +177,7 @@ finishpackage(Pool *pool, Solvable *s, int keep, Queue *job)
 int
 repo_add_cudf(Repo *repo, Repo *installedrepo, FILE *fp, Queue *job, int flags)
 {
-  Pool *pool = repo->pool;
+  Pool *pool;
   char *buf, *p;
   int bufa, bufl, c;
   Solvable *s;
@@ -190,12 +190,13 @@ repo_add_cudf(Repo *repo, Repo *installedrepo, FILE *fp, Queue *job, int flags)
   xrepo = repo ? repo : installedrepo;
   if (!xrepo)
     return -1;
+  pool = xrepo->pool;
 
   buf = solv_malloc(4096);
   bufa = 4096;
   bufl = 0;
   s = 0;
- 
+
   while (fgets(buf + bufl, bufa - bufl, fp) > 0)
     {
       bufl += strlen(buf + bufl);

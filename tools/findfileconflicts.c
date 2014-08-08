@@ -17,18 +17,17 @@ iterate_handle(Pool *pool, Id p, void *cbdata)
 {
   Solvable *s = pool->solvables + p;
   Id rpmdbid;
+  void *handle;
   
-  if (!p)
-    {
-      rpm_byrpmdbid(0, 0, (void **)cbdata);
-      return 0;
-    }
   if (!s->repo->rpmdbid)
     return 0;
   rpmdbid = s->repo->rpmdbid[p - s->repo->start];
   if (!rpmdbid)
     return 0;
-  return rpm_byrpmdbid(rpmdbid, 0, (void **)cbdata);
+  handle = rpm_byrpmdbid(cbdata, rpmdbid);
+  if (!handle)
+    fprintf(stderr, "rpm_byrpmdbid: %s\n", pool_errstr(pool));
+  return handle;
 }
 
 int main(int argc, char **argv)
@@ -40,12 +39,17 @@ int main(int argc, char **argv)
   int i;
   Queue todo, conflicts;
   void *state = 0;
+  char *rootdir = 0;
  
+  if (argc == 3 && !strcmp(argv[1], "--root"))
+    rootdir = argv[2];
   pool = pool_create();
+  if (rootdir)
+    pool_set_rootdir(pool, rootdir);
   pool_setdebuglevel(pool, 1);
   installed = repo_create(pool, "@System");
   pool_set_installed(pool, installed);
-  if (repo_add_rpmdb(installed, 0, 0))
+  if (repo_add_rpmdb(installed, 0, REPO_USE_ROOTDIR))
     {
       fprintf(stderr, "findfileconflicts: %s\n", pool_errstr(pool));
       exit(1);
@@ -54,10 +58,17 @@ int main(int argc, char **argv)
   queue_init(&conflicts);
   FOR_REPO_SOLVABLES(installed, p, s)
     queue_push(&todo, p);
-  pool_findfileconflicts(pool, &todo, 0, &conflicts, &iterate_handle, (void *)&state);
+  state = rpm_state_create(pool, pool_get_rootdir(pool));
+  pool_findfileconflicts(pool, &todo, 0, &conflicts, FINDFILECONFLICTS_USE_SOLVABLEFILELIST | FINDFILECONFLICTS_CHECK_DIRALIASING | FINDFILECONFLICTS_USE_ROOTDIR, &iterate_handle, state);
+  rpm_state_free(state);
   queue_free(&todo);
-  for (i = 0; i < conflicts.count; i += 5)
-    printf("%s: %s[%s] %s[%s]\n", pool_id2str(pool, conflicts.elements[i]), pool_solvid2str(pool, conflicts.elements[i + 1]), pool_id2str(pool, conflicts.elements[i + 2]), pool_solvid2str(pool, conflicts.elements[i + 3]), pool_id2str(pool, conflicts.elements[i + 4]));
+  for (i = 0; i < conflicts.count; i += 6)
+    {
+      if (conflicts.elements[i] != conflicts.elements[i + 3])
+        printf("%s - %s: %s[%s] %s[%s]\n", pool_id2str(pool, conflicts.elements[i]), pool_id2str(pool, conflicts.elements[i + 3]), pool_solvid2str(pool, conflicts.elements[i + 1]), pool_id2str(pool, conflicts.elements[i + 2]), pool_solvid2str(pool, conflicts.elements[i + 4]), pool_id2str(pool, conflicts.elements[i + 5]));
+      else
+        printf("%s: %s[%s] %s[%s]\n", pool_id2str(pool, conflicts.elements[i]), pool_solvid2str(pool, conflicts.elements[i + 1]), pool_id2str(pool, conflicts.elements[i + 2]), pool_solvid2str(pool, conflicts.elements[i + 4]), pool_id2str(pool, conflicts.elements[i + 5]));
+    }
   if (conflicts.count)
     {
       Queue job;

@@ -294,19 +294,19 @@ adddep(Repo *repo, Offset olddeps, char *line)
   char *p;
   Id id;
 
-  while (*line == ' ' && *line == '\t')
+  while (*line == ' ' || *line == '\t')
     line++;
   p = line;
   while (*p && *p != ' ' && *p != '\t' && *p != '<' && *p != '=' && *p != '>')
     p++;
   id = pool_strn2id(pool, line, p - line, 1);
-  while (*p == ' ' && *p == '\t')
+  while (*p == ' ' || *p == '\t')
     p++;
   if (*p == '<' || *p == '=' || *p == '>')
     {
       int flags = 0;
       for (;; p++)
-	{  
+	{
 	  if (*p == '<')
 	    flags |= REL_LT;
 	  else if (*p == '=')
@@ -316,7 +316,7 @@ adddep(Repo *repo, Offset olddeps, char *line)
 	  else
 	    break;
 	}
-      while (*p == ' ' && *p == '\t')
+      while (*p == ' ' || *p == '\t')
         p++;
       line = p;
       while (*p && *p != ' ' && *p != '\t')
@@ -338,7 +338,7 @@ repo_add_arch_pkg(Repo *repo, const char *fn, int flags)
   Solvable *s;
   int l, fd;
   struct stat stb;
-  void *pkgidhandle = 0;
+  Chksum *pkgidchk = 0;
 
   data = repo_add_repodata(repo, flags);
   if ((fd = open(flags & REPO_USE_ROOTDIR ? pool_prepend_rootdir_tmp(pool, fn) : fn, O_RDONLY, 0)) < 0)
@@ -370,14 +370,14 @@ repo_add_arch_pkg(Repo *repo, const char *fn, int flags)
       ignoreline = 0;
       s = pool_id2solvable(pool, repo_add_solvable(repo));
       if (flags & ARCH_ADD_WITH_PKGID)
-	pkgidhandle = solv_chksum_create(REPOKEY_TYPE_MD5);
+	pkgidchk = solv_chksum_create(REPOKEY_TYPE_MD5);
       while (getsentry(&th, line, sizeof(line)))
 	{
 	  l = strlen(line);
 	  if (l == 0)
 	    continue;
-	  if (pkgidhandle)
-	    solv_chksum_add(pkgidhandle, line, l);
+	  if (pkgidchk)
+	    solv_chksum_add(pkgidchk, line, l);
 	  if (line[l - 1] != '\n')
 	    {
 	      ignoreline = 1;
@@ -411,11 +411,11 @@ repo_add_arch_pkg(Repo *repo, const char *fn, int flags)
 	  else if (!strncmp(line, "arch = ", 7))
 	    s->arch = pool_str2id(pool, line + 7, 1);
 	  else if (!strncmp(line, "license = ", 10))
-	    repodata_set_poolstr(data, s - pool->solvables, SOLVABLE_LICENSE, line + 10);
+	    repodata_add_poolstr_array(data, s - pool->solvables, SOLVABLE_LICENSE, line + 10);
 	  else if (!strncmp(line, "replaces = ", 11))
 	    s->obsoletes = adddep(repo, s->obsoletes, line + 11);
 	  else if (!strncmp(line, "group = ", 8))
-	    repodata_set_poolstr(data, s - pool->solvables, SOLVABLE_GROUP, line + 8);
+	    repodata_add_poolstr_array(data, s - pool->solvables, SOLVABLE_GROUP, line + 8);
 	  else if (!strncmp(line, "depend = ", 9))
 	    s->requires = adddep(repo, s->requires, line + 9);
 	  else if (!strncmp(line, "optdepend = ", 12))
@@ -437,8 +437,8 @@ repo_add_arch_pkg(Repo *repo, const char *fn, int flags)
   if (!s)
     {
       pool_error(pool, -1, "%s: not an arch package", fn);
-      if (pkgidhandle)
-	solv_chksum_free(pkgidhandle, 0);
+      if (pkgidchk)
+	solv_chksum_free(pkgidchk, 0);
       return 0;
     }
   if (s && !s->name)
@@ -458,16 +458,16 @@ repo_add_arch_pkg(Repo *repo, const char *fn, int flags)
 	repodata_set_location(data, s - pool->solvables, 0, 0, fn);
       if (S_ISREG(stb.st_mode))
         repodata_set_num(data, s - pool->solvables, SOLVABLE_DOWNLOADSIZE, (unsigned long long)stb.st_size);
-      if (pkgidhandle)
+      if (pkgidchk)
 	{
 	  unsigned char pkgid[16];
-	  solv_chksum_free(pkgidhandle, pkgid);
+	  solv_chksum_free(pkgidchk, pkgid);
 	  repodata_set_bin_checksum(data, s - pool->solvables, SOLVABLE_PKGID, REPOKEY_TYPE_MD5, pkgid);
-	  pkgidhandle = 0;
+	  pkgidchk = 0;
 	}
     }
-  if (pkgidhandle)
-    solv_chksum_free(pkgidhandle, 0);
+  if (pkgidchk)
+    solv_chksum_free(pkgidchk, 0);
   if (!(flags & REPO_NO_INTERNALIZE))
     repodata_internalize(data);
   return s ? s - pool->solvables : 0;
@@ -500,9 +500,9 @@ static char *getsentrynl(struct tarhead *th, char *s, int size)
 }
 
 static Hashtable
-joinhash_init(Repo *repo, Hashmask *hmp)
+joinhash_init(Repo *repo, Hashval *hmp)
 {
-  Hashmask hm = mkmask(repo->nsolvables);
+  Hashval hm = mkmask(repo->nsolvables);
   Hashtable ht = solv_calloc(hm + 1, sizeof(*ht));
   Hashval h, hh;
   Solvable *s;
@@ -521,7 +521,7 @@ joinhash_init(Repo *repo, Hashmask *hmp)
 }
 
 static Solvable *
-joinhash_lookup(Repo *repo, Hashtable ht, Hashmask hm, const char *fn)
+joinhash_lookup(Repo *repo, Hashtable ht, Hashval hm, const char *fn)
 {
   const char *p;
   Id name, evr;
@@ -601,7 +601,7 @@ adddata(Repodata *data, Solvable *s, struct tarhead *th)
       else if (!strcmp(line, "%GROUPS%"))
 	{
 	  if (getsentrynl(th, line, sizeof(line)))
-	    repodata_set_poolstr(data, s - pool->solvables, SOLVABLE_GROUP, line);
+	    repodata_add_poolstr_array(data, s - pool->solvables, SOLVABLE_GROUP, line);
 	}
       else if (!strcmp(line, "%CSIZE%"))
 	{
@@ -634,7 +634,7 @@ adddata(Repodata *data, Solvable *s, struct tarhead *th)
       else if (!strcmp(line, "%LICENSE%"))
 	{
 	  if (getsentrynl(th, line, sizeof(line)))
-	    repodata_set_str(data, s - pool->solvables, SOLVABLE_LICENSE, line);
+	    repodata_add_poolstr_array(data, s - pool->solvables, SOLVABLE_LICENSE, line);
 	}
       else if (!strcmp(line, "%ARCH%"))
 	{
@@ -748,7 +748,7 @@ repo_add_arch_repo(Repo *repo, FILE *fp, int flags)
   int lastdnlen = 0;
   Solvable *s = 0;
   Hashtable joinhash = 0;
-  Hashmask joinhashmask = 0;
+  Hashval joinhashmask = 0;
 
   data = repo_add_repodata(repo, flags);
 

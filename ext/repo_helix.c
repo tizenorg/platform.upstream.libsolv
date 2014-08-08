@@ -7,15 +7,15 @@
 
 /*
  * repo_helix.c
- * 
+ *
  * Parse 'helix' XML representation
  * and create 'repo'
- * 
+ *
  * A bit of history: "Helix Code" was the name of the company that
  * wrote Red Carpet. The company was later renamed to Ximian.
  * The Red Carpet solver was merged into the ZYPP project, the
  * library used both by ZENworks and YaST for package management.
- * Red Carpet came with solver testcases in it's own repository
+ * Red Carpet came with solver testcases in its own repository
  * format, the 'helix' format.
  *
  */
@@ -100,6 +100,7 @@ static struct stateswitch stateswitches[] = {
   { STATE_SUBCHANNEL,  "atom",            STATE_PACKAGE, 0 },
   { STATE_SUBCHANNEL,  "patch",           STATE_PACKAGE, 0 },
   { STATE_SUBCHANNEL,  "product",         STATE_PACKAGE, 0 },
+  { STATE_SUBCHANNEL,  "application",     STATE_PACKAGE, 0 },
   { STATE_PACKAGE,     "name",            STATE_NAME, 1 },
   { STATE_PACKAGE,     "vendor",          STATE_VENDOR, 1 },
   { STATE_PACKAGE,     "buildtime",       STATE_BUILDTIME, 1 },
@@ -187,8 +188,8 @@ evr2id(Pool *pool, Parsedata *pd, const char *e, const char *v, const char *r)
   int l;
 
   /* treat explitcit 0 as NULL */
-  if (e && !strcmp(e, "0"))
-    e = NULL;
+  if (e && (!*e || !strcmp(e, "0")))
+    e = 0;
 
   if (v && !e)
     {
@@ -200,7 +201,7 @@ evr2id(Pool *pool, Parsedata *pd, const char *e, const char *v, const char *r)
       if (v2 > v && *v2 == ':')
 	e = "0";
     }
-  
+
   /* compute length of Id string */
   l = 1;  /* for the \0 */
   if (e)
@@ -384,7 +385,7 @@ adddep(Pool *pool, Parsedata *pd, unsigned int olddeps, const char **atts, Id ma
 /*
  * XML callback
  * <name>
- * 
+ *
  */
 
 static void XMLCALL
@@ -424,7 +425,7 @@ startElement(void *userData, const char *name, const char **atts)
 #endif
       return;
     }
-  
+
   /* set new state */
   pd->state = sw->to;
 
@@ -461,6 +462,8 @@ startElement(void *userData, const char *name, const char **atts)
         pd->kind = "product";
       else if (!strcmp(name, "patch"))
         pd->kind = "patch";
+      else if (!strcmp(name, "application"))
+        pd->kind = "application";
       else
         pd->kind = NULL;	       /* default is package */
       pd->levrspace = 1;
@@ -543,7 +546,7 @@ static const char *findKernelFlavor(Parsedata *pd, Solvable *s)
 {
   Pool *pool = pd->pool;
   Id pid, *pidp;
-  
+
   if (s->provides)
     {
       pidp = pd->repo->idarraydata + s->provides;
@@ -551,7 +554,7 @@ static const char *findKernelFlavor(Parsedata *pd, Solvable *s)
 	{
 	  Reldep *prd;
 	  const char *depname;
-	  
+
 	  if (!ISRELDEP(pid))
 	    continue;               /* wrong provides name */
 	  prd = GETRELDEP(pool, pid);
@@ -571,8 +574,8 @@ static const char *findKernelFlavor(Parsedata *pd, Solvable *s)
 	  if (!ISRELDEP(pid))
 	    {
 	      depname = pool_id2str(pool, pid);
-	    } 
-	  else 
+	    }
+	  else
 	    {
 	      Reldep *prd = GETRELDEP(pool, pid);
 	      depname = pool_id2str(pool, prd->name);
@@ -589,7 +592,7 @@ static const char *findKernelFlavor(Parsedata *pd, Solvable *s)
 /*
  * XML callback
  * </name>
- * 
+ *
  * create Solvable from collected data
  */
 
@@ -639,7 +642,7 @@ endElement(void *userData, const char *name)
 
       /* see bugzilla bnc#190163 */
       flavor = findKernelFlavor(pd, s);
-      if (flavor) 
+      if (flavor)
 	{
 	  char *cflavor = solv_strdup(flavor);	/* make pointer safe */
 
@@ -778,7 +781,7 @@ endElement(void *userData, const char *name)
 /*
  * XML callback
  * character data
- * 
+ *
  */
 
 static void XMLCALL
@@ -814,7 +817,7 @@ characterData(void *userData, const XML_Char *s, int len)
 /*
  * read 'helix' type xml from fp
  * add packages to pool/repo
- * 
+ *
  */
 
 int
@@ -831,7 +834,7 @@ repo_add_helix(Repo *repo, FILE *fp, int flags)
 
   now = solv_timems(0);
   data = repo_add_repodata(repo, flags);
-  
+
   /* prepare parsedata */
   memset(&pd, 0, sizeof(pd));
   for (i = 0, sw = stateswitches; sw->from != NUMSTATES; i++, sw++)

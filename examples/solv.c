@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, Novell Inc.
+ * Copyright (c) 2009-2013, Novell Inc.
  *
  * This program is licensed under the BSD license, read LICENSE.BSD
  * for further information
@@ -64,6 +64,9 @@
 #include "repo_rpmdb.h"
 #include "pool_fileconflicts.h"
 #endif
+#ifdef ENABLE_PUBKEY
+#include "repo_pubkey.h"
+#endif
 #ifdef ENABLE_DEBIAN
 #include "repo_deb.h"
 #endif
@@ -73,10 +76,16 @@
 #include "repo_updateinfoxml.h"
 #include "repo_deltainfoxml.h"
 #endif
+#ifdef ENABLE_APPDATA
+#include "repo_appdata.h"
+#endif
 #ifdef ENABLE_SUSEREPO
 #include "repo_products.h"
 #include "repo_susetags.h"
 #include "repo_content.h"
+#endif
+#ifdef SUSE
+#include "repo_autopattern.h"
 #endif
 #include "solv_xfopen.h"
 
@@ -87,6 +96,9 @@
 # define REPOINFO_PATH "/etc/zypp/repos.d"
 # define PRODUCTS_PATH "/etc/products.d"
 # define SOFTLOCKS_PATH "/var/lib/zypp/SoftLocks"
+#endif
+#ifdef ENABLE_APPDATA
+# define APPDATA_PATH "/usr/share/appdata"
 #endif
 
 #define SOLVCACHE_PATH "/var/cache/solv"
@@ -141,21 +153,22 @@ yum_substitute(Pool *pool, char *line)
 	{
 	  if (!releaseevr)
 	    {
+	      void *rpmstate;
 	      Queue q;
-	      const char *rootdir = pool_get_rootdir(pool);
 	
 	      queue_init(&q);
-	      rpm_installedrpmdbids(rootdir, "Providename", "redhat-release", &q);
+	      rpmstate = rpm_state_create(pool, pool_get_rootdir(pool));
+	      rpm_installedrpmdbids(rpmstate, "Providename", "redhat-release", &q);
 	      if (q.count)
 		{
-		  void *handle, *state = 0;
+		  void *handle;
 		  char *p;
-		  handle = rpm_byrpmdbid(q.elements[0], rootdir, &state);
-		  releaseevr = rpm_query(handle, SOLVABLE_EVR);
-		  rpm_byrpmdbid(0, 0, &state);
-		  if ((p = strchr(releaseevr, '-')) != 0)
+		  handle = rpm_byrpmdbid(rpmstate, q.elements[0]);
+		  releaseevr = handle ? rpm_query(handle, SOLVABLE_EVR) : 0;
+		  if (releaseevr && (p = strchr(releaseevr, '-')) != 0)
 		    *p = 0;
 		}
+	      rpm_state_free(rpmstate);
 	      queue_free(&q);
 	      if (!releaseevr)
 		{
@@ -517,7 +530,7 @@ verify_checksum(int fd, const char *file, const unsigned char *chksum, Id chksum
 {
   char buf[1024];
   const unsigned char *sum;
-  void *h;
+  Chksum *h;
   int l;
 
   h = solv_chksum_create(chksumtype);
@@ -797,8 +810,9 @@ curlfopen(struct repoinfo *cinfo, const char *file, int uncompress, const unsign
       if (file != cinfo->metalink && file != cinfo->mirrorlist)
 	{
 	  unsigned char mlchksum[32];
+	  Id mlchksumtype;
 	  fp = curlfopen(cinfo, cinfo->metalink ? cinfo->metalink : cinfo->mirrorlist, 0, 0, 0, 0);
-	  Id mlchksumtype = 0;
+	  mlchksumtype = 0;
 	  if (!fp)
 	    return 0;
 	  if (cinfo->metalink)
@@ -968,7 +982,7 @@ checksig(Pool *sigpool, FILE *fp, FILE *sigfp)
   lseek(fileno(fp), 0, SEEK_SET);
   possigfp = lseek(fileno(sigfp), 0, SEEK_CUR);
   lseek(fileno(sigfp), 0, SEEK_SET);
-  snprintf(cmd, sizeof(cmd), "gpg -q --homedir %s --verify /dev/fd/%d /dev/fd/%d >/dev/null 2>&1", gpgdir, fileno(sigfp), fileno(fp));
+  snprintf(cmd, sizeof(cmd), "gpgv -q --homedir %s --keyring %s/pubring.gpg /dev/fd/%d /dev/fd/%d >/dev/null 2>&1", gpgdir, gpgdir, fileno(sigfp), fileno(fp));
   fcntl(fileno(fp), F_SETFD, 0);	/* clear CLOEXEC */
   fcntl(fileno(sigfp), F_SETFD, 0);	/* clear CLOEXEC */
   r = system(cmd);
@@ -1003,8 +1017,8 @@ static Pool *
 read_sigs()
 {
   Pool *sigpool = pool_create();
-#if defined(ENABLE_RPMDB_PUBKEY)
-  Repo *repo = repo_create(sigpool, "rpmdbkeys");
+#if defined(ENABLE_PUBKEY) && defined(ENABLE_RPMDB)
+  Repo *repo = repo_create(sigpool, "pubkeys");
   repo_add_rpmdb_pubkeys(repo, 0);
 #endif
   return sigpool;
@@ -1038,7 +1052,7 @@ void
 calc_checksum_fp(FILE *fp, Id chktype, unsigned char *out)
 {
   char buf[4096];
-  void *h = solv_chksum_create(chktype);
+  Chksum *h = solv_chksum_create(chktype);
   int l;
 
   solv_chksum_add(h, CHKSUM_IDENT, strlen(CHKSUM_IDENT));
@@ -1051,7 +1065,7 @@ calc_checksum_fp(FILE *fp, Id chktype, unsigned char *out)
 void
 calc_checksum_stat(struct stat *stb, Id chktype, unsigned char *cookie, unsigned char *out)
 {
-  void *h = solv_chksum_create(chktype);
+  Chksum *h = solv_chksum_create(chktype);
   solv_chksum_add(h, CHKSUM_IDENT, strlen(CHKSUM_IDENT));
   if (cookie)
     solv_chksum_add(h, cookie, 32);
@@ -1074,9 +1088,19 @@ setarch(Pool *pool)
   pool_setarch(pool, un.machine);
 }
 
-char *calccachepath(Repo *repo, const char *repoext)
+char *userhome;
+
+char *
+calccachepath(Repo *repo, const char *repoext, int forcesystemloc)
 {
-  char *q, *p = pool_tmpjoin(repo->pool, SOLVCACHE_PATH, "/", repo->name);
+  char *q, *p;
+  int l;
+  if (!forcesystemloc && userhome && getuid())
+    p = pool_tmpjoin(repo->pool, userhome, "/.solvcache/", 0);
+  else
+    p = pool_tmpjoin(repo->pool, SOLVCACHE_PATH, "/", 0);
+  l = strlen(p);
+  p = pool_tmpappend(repo->pool, p, repo->name, 0);
   if (repoext)
     {
       p = pool_tmpappend(repo->pool, p, "_", repoext);
@@ -1084,7 +1108,7 @@ char *calccachepath(Repo *repo, const char *repoext)
     }
   else
     p = pool_tmpappend(repo->pool, p, ".solv", 0);
-  q = p + strlen(SOLVCACHE_PATH) + 1;
+  q = p + l;
   if (*q == '.')
     *q = '_';
   for (; *q; q++)
@@ -1101,9 +1125,19 @@ usecachedrepo(Repo *repo, const char *repoext, unsigned char *cookie, int mark)
   unsigned char myextcookie[32];
   struct repoinfo *cinfo;
   int flags;
+  int forcesystemloc;
 
+  forcesystemloc = mark & 2 ? 0 : 1;
+  if (mark < 2 && userhome && getuid())
+    {
+      /* first try home location */
+      int res = usecachedrepo(repo, repoext, cookie, mark | 2);
+      if (res)
+	return res;
+    }
+  mark &= 1;
   cinfo = repo->appdata;
-  if (!(fp = fopen(calccachepath(repo, repoext), "r")))
+  if (!(fp = fopen(calccachepath(repo, repoext, forcesystemloc), "r")))
     return 0;
   if (fseek(fp, -sizeof(mycookie), SEEK_END) || fread(mycookie, sizeof(mycookie), 1, fp) != 1)
     {
@@ -1144,7 +1178,7 @@ usecachedrepo(Repo *repo, const char *repoext, unsigned char *cookie, int mark)
       memcpy(cinfo->extcookie, myextcookie, sizeof(myextcookie));
     }
   if (mark)
-    futimes(fileno(fp), 0);	/* try to set modification time */
+    futimens(fileno(fp), 0);	/* try to set modification time */
   fclose(fp);
   return 1;
 }
@@ -1154,16 +1188,18 @@ writecachedrepo(Repo *repo, Repodata *info, const char *repoext, unsigned char *
 {
   FILE *fp;
   int i, fd;
-  char *tmpl;
+  char *tmpl, *cachedir;
   struct repoinfo *cinfo;
   int onepiece;
 
   cinfo = repo->appdata;
   if (cinfo && cinfo->incomplete)
     return;
-  mkdir(SOLVCACHE_PATH, 0755);
+  cachedir = userhome && getuid() ? pool_tmpjoin(repo->pool, userhome, "/.solvcache", 0) : SOLVCACHE_PATH;
+  if (access(cachedir, W_OK | X_OK) != 0 && mkdir(cachedir, 0755) == 0)
+    printf("[created %s]\n", cachedir);
   /* use dupjoin instead of tmpjoin because tmpl must survive repo_write */
-  tmpl = solv_dupjoin(SOLVCACHE_PATH, "/", ".newsolv-XXXXXX");
+  tmpl = solv_dupjoin(cachedir, "/", ".newsolv-XXXXXX");
   fd = mkstemp(tmpl);
   if (fd < 0)
     {
@@ -1266,7 +1302,7 @@ writecachedrepo(Repo *repo, Repodata *info, const char *repoext, unsigned char *
 	  fclose(fp);
 	}
     }
-  if (!rename(tmpl, calccachepath(repo, repoext)))
+  if (!rename(tmpl, calccachepath(repo, repoext, 0)))
     unlink(tmpl);
   free(tmpl);
 }
@@ -1353,12 +1389,10 @@ repomd_load_ext(Repo *repo, Repodata *data)
     strcpy(ext, "DL");
   else
     return 0;
-#if 1
   printf("[%s:%s", repo->name, ext);
-#endif
   if (usecachedrepo(repo, ext, cinfo->extcookie, 0))
     {
-      printf(" cached]\n");fflush(stdout);
+      printf(" cached]\n"); fflush(stdout);
       return 1;
     }
   printf(" fetching]\n"); fflush(stdout);
@@ -1498,17 +1532,13 @@ susetags_load_ext(Repo *repo, Repodata *data)
   ext[0] = filename[9];
   ext[1] = filename[10];
   ext[2] = 0;
-#if 1
   printf("[%s:%s", repo->name, ext);
-#endif
   if (usecachedrepo(repo, ext, cinfo->extcookie, 0))
     {
       printf(" cached]\n"); fflush(stdout);
       return 1;
     }
-#if 1
   printf(" fetching]\n"); fflush(stdout);
-#endif
   defvendor = repo_lookup_id(repo, SOLVID_META, SUSETAGS_DEFAULTVENDOR);
   descrdir = repo_lookup_str(repo, SOLVID_META, SUSETAGS_DESCRDIR);
   if (!descrdir)
@@ -1706,16 +1736,16 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
 #if defined(ENABLE_RPMDB) && (defined(SUSE) || defined(FEDORA))
   printf("rpm database:");
   if (stat(pool_prepend_rootdir_tmp(pool, "/var/lib/rpm/Packages"), &stb))
-    memset(&stb, 0, sizeof(&stb));
+    memset(&stb, 0, sizeof(stb));
 #endif
 #if defined(ENABLE_DEBIAN) && defined(DEBIAN)
   printf("dpgk database:");
   if (stat(pool_prepend_rootdir_tmp(pool, "/var/lib/dpkg/status"), &stb))
-    memset(&stb, 0, sizeof(&stb));
+    memset(&stb, 0, sizeof(stb));
 #endif
 #ifdef NOSYSTEM
   printf("no installed database:");
-  memset(&stb, 0, sizeof(&stb));
+  memset(&stb, 0, sizeof(stb));
 #endif
   calc_checksum_stat(&stb, REPOKEY_TYPE_SHA256, 0, installedcookie);
   if (usecachedrepo(repo, 0, installedcookie, 0))
@@ -1723,44 +1753,42 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
   else
     {
 #if defined(ENABLE_RPMDB) && (defined(SUSE) || defined(FEDORA))
-      FILE *ofp;
-      Repo *ref = 0;
+      FILE *ofp = 0;
 #endif
       printf(" reading\n");
 
 #if defined(ENABLE_RPMDB) && (defined(SUSE) || defined(FEDORA))
 # if defined(ENABLE_SUSEREPO) && defined(PRODUCTS_PATH)
-      if (repo_add_products(repo, PRODUCTS_PATH, REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
+      if (repo_add_products(repo, PRODUCTS_PATH, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
 	  fprintf(stderr, "product reading failed: %s\n", pool_errstr(pool));
 	  exit(1);
 	}
 # endif
-      if ((ofp = fopen(calccachepath(repo, 0), "r")) != 0)
+# if defined(ENABLE_APPDATA)
+      if (repo_add_appdata_dir(repo, APPDATA_PATH, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
-	  ref = repo_create(pool, "@System.old");
-	  if (repo_add_solv(ref, ofp, 0))
-	    {
-	      repo_free(ref, 1);
-	      ref = 0;
-	    }
-	  fclose(ofp);
+	  fprintf(stderr, "appdata reading failed: %s\n", pool_errstr(pool));
+	  exit(1);
 	}
-      if (repo_add_rpmdb(repo, ref, REPO_REUSE_REPODATA | REPO_USE_ROOTDIR))
+# endif
+      ofp = fopen(calccachepath(repo, 0, 0), "r");
+      if (repo_add_rpmdb_reffp(repo, ofp, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
 	  fprintf(stderr, "installed db: %s\n", pool_errstr(pool));
 	  exit(1);
 	}
-      if (ref)
-        repo_free(ref, 1);
+      if (ofp)
+        fclose(ofp);
 #endif
 #if defined(ENABLE_DEBIAN) && defined(DEBIAN)
-      if (repo_add_debdb(repo, REPO_REUSE_REPODATA | REPO_USE_ROOTDIR))
+      if (repo_add_debdb(repo, REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | REPO_USE_ROOTDIR))
 	{
 	  fprintf(stderr, "installed db: %s\n", pool_errstr(pool));
 	  exit(1);
 	}
 #endif
+      repo_internalize(repo);
       writecachedrepo(repo, 0, 0, installedcookie);
     }
   pool_set_installed(pool, repo);
@@ -1777,7 +1805,7 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
       repo->priority = 99 - cinfo->priority;
 
       dorefresh = cinfo->autorefresh;
-      if (dorefresh && cinfo->metadata_expire && stat(calccachepath(repo, 0), &stb) == 0)
+      if (dorefresh && cinfo->metadata_expire && stat(calccachepath(repo, 0, 0), &stb) == 0)
 	{
 	  if (cinfo->metadata_expire == -1 || time(0) - stb.st_mtime < cinfo->metadata_expire)
 	    dorefresh = 0;
@@ -1845,6 +1873,18 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
 	      fclose(fp);
 	    }
 
+#ifdef ENABLE_APPDATA
+	  filename = repomd_find(repo, "appdata", &filechksum, &filechksumtype);
+	  if (filename && (fp = curlfopen(cinfo, filename, iscompressed(filename), filechksum, filechksumtype, 1)) != 0)
+	    {
+	      if (repo_add_appdata(repo, fp, 0))
+		{
+	          printf("appdata: %s\n", pool_errstr(pool));
+		  cinfo->incomplete = 1;
+		}
+	      fclose(fp);
+	    }
+#endif
 	  data = repo_add_repodata(repo, 0);
 	  if (!repomd_add_ext(repo, data, "deltainfo"))
 	    repomd_add_ext(repo, data, "prestodelta");
@@ -1955,6 +1995,20 @@ read_repos(Pool *pool, struct repoinfo *repoinfos, int nrepoinfos)
 		  fclose(fp);
 		}
 	    }
+#ifdef ENABLE_APPDATA
+	  filename = susetags_find(repo, "appdata.xml.gz", &filechksum, &filechksumtype);
+          if (!filename)
+	    filename = susetags_find(repo, "appdata.xml", &filechksum, &filechksumtype);
+	  if (filename && (fp = curlfopen(cinfo, pool_tmpjoin(pool, descrdir, "/", filename), iscompressed(filename), filechksum, filechksumtype, 1)) != 0)
+	    {
+	      if (repo_add_appdata(repo, fp, 0))
+		{
+	          printf("appdata: %s\n", pool_errstr(pool));
+		  cinfo->incomplete = 1;
+		}
+	      fclose(fp);
+	    }
+#endif
           repo_internalize(repo);
 	  data = repo_add_repodata(repo, 0);
 	  susetags_add_ext(repo, data);
@@ -2067,7 +2121,7 @@ struct fcstate {
   FILE **newpkgsfps;
   Queue *checkq;
   int newpkgscnt;
-  void *rpmdbstate;
+  void *rpmstate;
 };
 
 static void *
@@ -2079,11 +2133,6 @@ fileconflict_cb(Pool *pool, Id p, void *cbdata)
   int i;
   FILE *fp;
 
-  if (!p)
-    {
-      rpm_byrpmdbid(0, 0, &fcstate->rpmdbstate);
-      return 0;
-    }
   s = pool_id2solvable(pool, p);
   if (pool->installed && s->repo == pool->installed)
     {
@@ -2092,7 +2141,7 @@ fileconflict_cb(Pool *pool, Id p, void *cbdata)
       rpmdbid = s->repo->rpmdbid[p - s->repo->start];
       if (!rpmdbid)
 	return 0;
-       return rpm_byrpmdbid(rpmdbid, 0, &fcstate->rpmdbstate);
+      return rpm_byrpmdbid(fcstate->rpmstate, rpmdbid);
     }
   for (i = 0; i < fcstate->newpkgscnt; i++)
     if (fcstate->checkq->elements[i] == p)
@@ -2103,7 +2152,7 @@ fileconflict_cb(Pool *pool, Id p, void *cbdata)
   if (!fp)
     return 0;
   rewind(fp);
-  return rpm_byfp(fp, pool_solvable2str(pool, s), &fcstate->rpmdbstate);
+  return rpm_byfp(fcstate->rpmstate, fp, pool_solvable2str(pool, s));
 }
 
 
@@ -2189,31 +2238,10 @@ rundpkg(const char *arg, const char *name, int dupfd3, const char *rootdir)
 
 #endif
 
+#ifdef SUSE
 static Id
 nscallback(Pool *pool, void *data, Id name, Id evr)
 {
-  if (name == NAMESPACE_PRODUCTBUDDY)
-    {
-      /* SUSE specific hack: each product has an associated rpm */
-      Solvable *s = pool->solvables + evr;
-      Id p, pp, cap;
-      Id bestp = 0;
-
-      cap = pool_str2id(pool, pool_tmpjoin(pool, "product(", pool_id2str(pool, s->name) + 8, ")"), 0);
-      if (!cap)
-        return 0;
-      cap = pool_rel2id(pool, cap, s->evr, REL_EQ, 0);
-      if (!cap)
-        return 0;
-      FOR_PROVIDES(p, pp, cap)
-        {
-          Solvable *ps = pool->solvables + p;
-          if (ps->repo == s->repo && ps->arch == s->arch)
-            if (!bestp || pool_evrcmp(pool, pool->solvables[bestp].evr, ps->evr, EVRCMP_COMPARE) < 0)
-	      bestp = p;
-        }
-      return bestp;
-    }
 #if 0
   if (name == NAMESPACE_LANGUAGE)
     {
@@ -2229,9 +2257,9 @@ nscallback(Pool *pool, void *data, Id name, Id evr)
 #endif
   return 0;
 }
+#endif
 
 #ifdef SOFTLOCKS_PATH
-
 void
 addsoftlocks(Pool *pool, Queue *job)
 {
@@ -2270,11 +2298,12 @@ addsoftlocks(Pool *pool, Queue *job)
     }
   fclose(fp);
 }
-
 #endif
 
 
-void
+#if defined(ENABLE_RPMDB)
+
+static void
 rewrite_repos(Pool *pool, Queue *addedfileprovides, Queue *addedfileprovides_inst)
 {
   Repo *repo;
@@ -2294,6 +2323,8 @@ rewrite_repos(Pool *pool, Queue *addedfileprovides, Queue *addedfileprovides_ins
       if (repo->nrepodata < 2)
 	continue;
       cinfo = repo->appdata;
+      if (repo != pool->installed && !cinfo)
+	continue;
       if (cinfo && cinfo->incomplete)
 	continue;
       data = repo_id2repodata(repo, 1);
@@ -2341,16 +2372,45 @@ rewrite_repos(Pool *pool, Queue *addedfileprovides, Queue *addedfileprovides_ins
 }
 
 static void
-select_patches(Pool *pool, Queue *job)
+addfileprovides(Pool *pool)
+{
+  Queue addedfileprovides;
+  Queue addedfileprovides_inst;
+
+  queue_init(&addedfileprovides);
+  queue_init(&addedfileprovides_inst);
+  pool_addfileprovides_queue(pool, &addedfileprovides, &addedfileprovides_inst);
+  if (addedfileprovides.count || addedfileprovides_inst.count)
+    rewrite_repos(pool, &addedfileprovides, &addedfileprovides_inst);
+  queue_free(&addedfileprovides);
+  queue_free(&addedfileprovides_inst);
+}
+
+#endif
+
+#ifdef SUSE
+static void
+add_autopackages(Pool *pool)
+{
+  int i;
+  Repo *repo;
+  FOR_REPOS(i, repo)
+    repo_add_autopattern(repo, 0);
+}
+#endif
+
+#if defined(SUSE) || defined(FEDORA)
+static void
+add_patchjobs(Pool *pool, Queue *job)
 {
   Id p, pp;
   int pruneyou = 0;
-  Map installedmap, noobsmap;
+  Map installedmap, multiversionmap;
   Solvable *s;
 
-  map_init(&noobsmap, 0);
+  map_init(&multiversionmap, 0);
   map_init(&installedmap, pool->nsolvables);
-  solver_calculate_noobsmap(pool, job, &noobsmap);
+  solver_calculate_multiversionmap(pool, job, &multiversionmap);
   if (pool->installed)
     FOR_REPO_SOLVABLES(pool->installed, p, s)
       MAPSET(&installedmap, p);
@@ -2379,7 +2439,7 @@ select_patches(Pool *pool, Queue *job)
       type = solvable_lookup_str(s, SOLVABLE_PATCHCATEGORY);
       if (type && !strcmp(type, "optional"))
 	continue;
-      r = solvable_trivial_installable_map(s, &installedmap, 0, &noobsmap);
+      r = solvable_trivial_installable_map(s, &installedmap, 0, &multiversionmap);
       if (r == -1)
 	continue;
       if (solvable_lookup_bool(s, UPDATE_RESTART) && r == 0)
@@ -2392,8 +2452,133 @@ select_patches(Pool *pool, Queue *job)
       queue_push2(job, SOLVER_SOLVABLE, p);
     }
   map_free(&installedmap);
-  map_free(&noobsmap);
+  map_free(&multiversionmap);
 }
+#endif
+
+#ifdef SUSE
+static void
+showdiskusagechanges(Transaction *trans)
+{
+  DUChanges duc[4];
+  int i;
+
+  /* XXX: use mountpoints here */
+  duc[0].path = "/";
+  duc[1].path = "/usr/share/man";
+  duc[2].path = "/sbin";
+  duc[3].path = "/etc";
+  transaction_calc_duchanges(trans, duc, 4);
+  for (i = 0; i < 4; i++)
+    printf("duchanges %s: %d K  %d inodes\n", duc[i].path, duc[i].kbytes, duc[i].files);
+}
+#endif
+
+#if defined(ENABLE_RPMDB)
+static FILE *
+trydeltadownload(Solvable *s, struct repoinfo *cinfo, const char *loc)
+{
+  Pool *pool = s->repo->pool;
+  Dataiterator di;
+  Id pp;
+  const unsigned char *chksum;
+  Id chksumtype;
+  FILE *retfp = 0;
+  char *matchname = strdup(pool_id2str(pool, s->name));
+
+  dataiterator_init(&di, pool, s->repo, SOLVID_META, DELTA_PACKAGE_NAME, matchname, SEARCH_STRING);
+  dataiterator_prepend_keyname(&di, REPOSITORY_DELTAINFO);
+  while (dataiterator_step(&di))
+    {
+      Id baseevr, op;
+
+      dataiterator_setpos_parent(&di);
+      if (pool_lookup_id(pool, SOLVID_POS, DELTA_PACKAGE_EVR) != s->evr ||
+	  pool_lookup_id(pool, SOLVID_POS, DELTA_PACKAGE_ARCH) != s->arch)
+	continue;
+      baseevr = pool_lookup_id(pool, SOLVID_POS, DELTA_BASE_EVR);
+      FOR_PROVIDES(op, pp, s->name)
+	{
+	  Solvable *os = pool->solvables + op;
+	  if (os->repo == pool->installed && os->name == s->name && os->arch == s->arch && os->evr == baseevr)
+	    break;
+	}
+      if (op && access("/usr/bin/applydeltarpm", X_OK) == 0)
+	{
+	  /* base is installed, run sequence check */
+	  const char *seq;
+	  const char *dloc;
+	  const char *archstr;
+	  FILE *fp;
+	  char cmd[128];
+	  int newfd;
+
+	  archstr = pool_id2str(pool, s->arch);
+	  if (strlen(archstr) > 10 || strchr(archstr, '\'') != 0)
+	    continue;
+
+	  seq = pool_tmpjoin(pool, pool_lookup_str(pool, SOLVID_POS, DELTA_SEQ_NAME), "-", pool_lookup_str(pool, SOLVID_POS, DELTA_SEQ_EVR));
+	  seq = pool_tmpappend(pool, seq, "-", pool_lookup_str(pool, SOLVID_POS, DELTA_SEQ_NUM));
+	  if (strchr(seq, '\'') != 0)
+	    continue;
+#ifdef FEDORA
+	  sprintf(cmd, "/usr/bin/applydeltarpm -a '%s' -c -s '", archstr);
+#else
+	  sprintf(cmd, "/usr/bin/applydeltarpm -c -s '");
+#endif
+	  if (system(pool_tmpjoin(pool, cmd, seq, "'")) != 0)
+	    continue;	/* didn't match */
+	  /* looks good, download delta */
+	  chksumtype = 0;
+	  chksum = pool_lookup_bin_checksum(pool, SOLVID_POS, DELTA_CHECKSUM, &chksumtype);
+	  if (!chksumtype)
+	    continue;	/* no way! */
+	  dloc = pool_lookup_deltalocation(pool, SOLVID_POS, 0);
+	  if (!dloc)
+	    continue;
+#ifdef ENABLE_SUSEREPO
+	  if (cinfo->type == TYPE_SUSETAGS)
+	    {
+	      const char *datadir = repo_lookup_str(cinfo->repo, SOLVID_META, SUSETAGS_DATADIR);
+	      dloc = pool_tmpjoin(pool, datadir ? datadir : "suse", "/", dloc);
+	    }
+#endif
+	  if ((fp = curlfopen(cinfo, dloc, 0, chksum, chksumtype, 0)) == 0)
+	    continue;
+	  /* got it, now reconstruct */
+	  newfd = opentmpfile();
+#ifdef FEDORA
+	  sprintf(cmd, "applydeltarpm -a '%s' /dev/fd/%d /dev/fd/%d", archstr, fileno(fp), newfd);
+#else
+	  sprintf(cmd, "applydeltarpm /dev/fd/%d /dev/fd/%d", fileno(fp), newfd);
+#endif
+	  fcntl(fileno(fp), F_SETFD, 0);
+	  if (system(cmd))
+	    {
+	      close(newfd);
+	      fclose(fp);
+	      continue;
+	    }
+	  lseek(newfd, 0, SEEK_SET);
+	  chksumtype = 0;
+	  chksum = solvable_lookup_bin_checksum(s, SOLVABLE_CHECKSUM, &chksumtype);
+	  if (chksumtype && !verify_checksum(newfd, loc, chksum, chksumtype))
+	    {
+	      close(newfd);
+	      fclose(fp);
+	      continue;
+	    }
+	  retfp = fdopen(newfd, "r");
+	  fclose(fp);
+	  break;
+	}
+    }
+  dataiterator_free(&di);
+  solv_free(matchname);
+  return retfp;
+}
+#endif
+
 
 #define MODE_LIST        0
 #define MODE_INSTALL     1
@@ -2421,6 +2606,9 @@ usage(int r)
   fprintf(stderr, "    search:       search name/summary/description\n");
   fprintf(stderr, "    update:       update installed packages\n");
   fprintf(stderr, "    verify:       check dependencies of installed packages\n");
+#if defined(SUSE) || defined(FEDORA)
+  fprintf(stderr, "    patch:        install newest patches\n");
+#endif
   fprintf(stderr, "\n");
   exit(r);
 }
@@ -2431,7 +2619,7 @@ main(int argc, char **argv)
   Pool *pool;
   Repo *commandlinerepo = 0;
   Id *commandlinepkgs = 0;
-  Id p, pp;
+  Id p;
   struct repoinfo *repoinfos;
   int nrepoinfos = 0;
   int mainmode = 0, mode = 0;
@@ -2439,17 +2627,28 @@ main(int argc, char **argv)
   Queue job, checkq;
   Solver *solv = 0;
   Transaction *trans;
-  char inbuf[128], *ip;
   FILE **newpkgsfps;
-  Queue addedfileprovides;
-  Queue addedfileprovides_inst;
   Queue repofilter;
+  Queue kindfilter;
+  Queue archfilter;
+  int archfilter_src = 0;
   int cleandeps = 0;
   int forcebest = 0;
   char *rootdir = 0;
+  char *keyname = 0;
+  int debuglevel = 0;
 
   argc--;
   argv++;
+  userhome = getenv("HOME");
+  if (userhome && userhome[0] != '/')
+    userhome = 0;
+  while (argc && !strcmp(argv[0], "-d"))
+    {
+      debuglevel++;
+      argc--;
+      argv++;
+    }
   if (!argv[0])
     usage(1);
   if (!strcmp(argv[0], "install") || !strcmp(argv[0], "in"))
@@ -2457,17 +2656,19 @@ main(int argc, char **argv)
       mainmode = MODE_INSTALL;
       mode = SOLVER_INSTALL;
     }
+#if defined(SUSE) || defined(FEDORA)
   else if (!strcmp(argv[0], "patch"))
     {
       mainmode = MODE_PATCH;
       mode = SOLVER_INSTALL;
     }
+#endif
   else if (!strcmp(argv[0], "erase") || !strcmp(argv[0], "rm"))
     {
       mainmode = MODE_ERASE;
       mode = SOLVER_ERASE;
     }
-  else if (!strcmp(argv[0], "list"))
+  else if (!strcmp(argv[0], "list") || !strcmp(argv[0], "ls"))
     {
       mainmode = MODE_LIST;
       mode = 0;
@@ -2477,7 +2678,7 @@ main(int argc, char **argv)
       mainmode = MODE_INFO;
       mode = 0;
     }
-  else if (!strcmp(argv[0], "search"))
+  else if (!strcmp(argv[0], "search") || !strcmp(argv[0], "se"))
     {
       mainmode = MODE_SEARCH;
       mode = 0;
@@ -2513,7 +2714,6 @@ main(int argc, char **argv)
 	  argc -= 2;
 	  argv += 2;
 	}
-
       else if (argc > 1 && !strcmp(argv[1], "--clean"))
 	{
 	  cleandeps = 1;
@@ -2525,6 +2725,12 @@ main(int argc, char **argv)
 	  forcebest = 1;
 	  argc--;
 	  argv++;
+	}
+      if (argc > 2 && !strcmp(argv[1], "--keyname"))
+	{
+	  keyname = argv[2];
+	  argc -= 2;
+	  argv += 2;
 	}
       else
 	break;
@@ -2541,9 +2747,13 @@ main(int argc, char **argv)
 #endif
 
   pool_setloadcallback(pool, load_stub, 0);
+#ifdef SUSE
   pool->nscallback = nscallback;
-  // pool_setdebuglevel(pool, 2);
+#endif
+  if (debuglevel)
+    pool_setdebuglevel(pool, debuglevel);
   setarch(pool);
+  pool_set_flag(pool, POOL_FLAG_ADDFILEPROVIDESFILTERED, 1);
   repoinfos = read_repoinfos(pool, &nrepoinfos);
 
   if (mainmode == MODE_REPOLIST)
@@ -2561,47 +2771,91 @@ main(int argc, char **argv)
 
   read_repos(pool, repoinfos, nrepoinfos);
 
+  /* setup filters */
   queue_init(&repofilter);
-  while (argc > 2 && !strcmp(argv[1], "-r"))
+  queue_init(&kindfilter);
+  queue_init(&archfilter);
+  while (argc > 1)
     {
-      const char *rname = argv[2], *rp;
-      Id repoid = 0;
-      for (rp = rname; *rp; rp++)
-	if (*rp <= '0' || *rp >= '9')
-	  break;
-      if (!*rp)
+      if (!strcmp(argv[1], "-i"))
 	{
-	  /* repo specified by number */
-	  int rnum = atoi(rname);
-	  for (i = 0; i < nrepoinfos; i++)
+	  queue_push2(&repofilter, SOLVER_SOLVABLE_REPO | SOLVER_SETREPO, pool->installed->repoid);
+	  argc--;
+	  argv++;
+	}
+      else if (argc > 2 && (!strcmp(argv[1], "-r") || !strcmp(argv[1], "--repo")))
+	{
+	  const char *rname = argv[2], *rp;
+	  Id repoid = 0;
+	  for (rp = rname; *rp; rp++)
+	    if (*rp <= '0' || *rp >= '9')
+	      break;
+	  if (!*rp)
 	    {
-	      struct repoinfo *cinfo = repoinfos + i;
-	      if (!cinfo->enabled)
-		continue;
-	      if (--rnum == 0)
-	        repoid = cinfo->repo->repoid;
+	      /* repo specified by number */
+	      int rnum = atoi(rname);
+	      for (i = 0; i < nrepoinfos; i++)
+		{
+		  struct repoinfo *cinfo = repoinfos + i;
+		  if (!cinfo->enabled)
+		    continue;
+		  if (--rnum == 0)
+		    repoid = cinfo->repo->repoid;
+		}
 	    }
+	  else
+	    {
+	      /* repo specified by alias */
+	      Repo *repo;
+	      FOR_REPOS(i, repo)
+		{
+		  if (!strcasecmp(rname, repo->name))
+		    repoid = repo->repoid;
+		}
+	    }
+	  if (!repoid)
+	    {
+	      fprintf(stderr, "%s: no such repo\n", rname);
+	      exit(1);
+	    }
+	  /* SETVENDOR is actually wrong but useful */
+	  queue_push2(&repofilter, SOLVER_SOLVABLE_REPO | SOLVER_SETREPO | SOLVER_SETVENDOR, repoid);
+	  argc -= 2;
+	  argv += 2;
+	}
+      else if (argc > 2 && !strcmp(argv[1], "--arch"))
+	{
+	  if (!strcmp(argv[2], "src") || !strcmp(argv[2], "nosrc"))
+	    archfilter_src = 1;
+	  queue_push2(&archfilter, SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, 0, pool_str2id(pool, argv[2], 1), REL_ARCH, 1));
+	  argc -= 2;
+	  argv += 2;
+	}
+      else if (argc > 2 && (!strcmp(argv[1], "-t") || !strcmp(argv[1], "--type")))
+	{
+	  const char *kind = argv[2];
+	  if (!strcmp(kind, "srcpackage"))
+	    {
+	      /* hey! should use --arch! */
+	      queue_push2(&archfilter, SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, 0, ARCH_SRC, REL_ARCH, 1));
+	      archfilter_src = 1;
+	      argc -= 2;
+	      argv += 2;
+	      continue;
+	    }
+	  if (!strcmp(kind, "package"))
+	    kind = "";
+	  if (!strcmp(kind, "all"))
+	    queue_push2(&kindfilter, SOLVER_SOLVABLE_ALL, 0);
+	  else
+	    queue_push2(&kindfilter, SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, 0, pool_str2id(pool, kind, 1), REL_KIND, 1));
+	  argc -= 2;
+	  argv += 2;
 	}
       else
-	{
-	  /* repo specified by alias */
-	  Repo *repo;
-	  FOR_REPOS(i, repo)
-	    {
-	      if (!strcasecmp(rname, repo->name))
-		repoid = repo->repoid;
-	    }
-	}
-      if (!repoid)
-	{
-	  fprintf(stderr, "%s: no such repo\n", rname);
-	  exit(1);
-	}
-      /* SETVENDOR is actually wrong but useful */
-      queue_push2(&repofilter, SOLVER_SOLVABLE_REPO | SOLVER_SETREPO | SOLVER_SETVENDOR, repoid);
-      argc -= 2;
-      argv += 2;
+	break;
     }
+
   if (mainmode == MODE_SEARCH)
     {
       Queue sel, q;
@@ -2639,8 +2893,8 @@ main(int argc, char **argv)
       exit(0);
     }
 
-
-  if (mainmode == MODE_LIST || mainmode == MODE_INSTALL)
+  /* process command line packages */
+  if (mainmode == MODE_LIST || mainmode == MODE_INFO || mainmode == MODE_INSTALL)
     {
       for (i = 1; i < argc; i++)
 	{
@@ -2683,15 +2937,18 @@ main(int argc, char **argv)
 
   // FOR_REPOS(i, repo)
   //   printf("%s: %d solvables\n", repo->name, repo->nsolvables);
-  queue_init(&addedfileprovides);
-  queue_init(&addedfileprovides_inst);
-  pool_addfileprovides_queue(pool, &addedfileprovides, &addedfileprovides_inst);
-  if (addedfileprovides.count || addedfileprovides_inst.count)
-    rewrite_repos(pool, &addedfileprovides, &addedfileprovides_inst);
-  queue_free(&addedfileprovides);
-  queue_free(&addedfileprovides_inst);
+
+#if defined(ENABLE_RPMDB)
+  if (pool->disttype == DISTTYPE_RPM)
+    addfileprovides(pool);
+#endif
+#ifdef SUSE
+  add_autopackages(pool);
+#endif
   pool_createwhatprovides(pool);
 
+  if (keyname)
+    keyname = solv_dupjoin("solvable:", keyname, 0);
   queue_init(&job);
   for (i = 1; i < argc; i++)
     {
@@ -2706,19 +2963,35 @@ main(int argc, char **argv)
       queue_init(&job2);
       flags = SELECTION_NAME|SELECTION_PROVIDES|SELECTION_GLOB;
       flags |= SELECTION_CANON|SELECTION_DOTARCH|SELECTION_REL;
-      if (mode == MODE_LIST)
+      if (kindfilter.count)
+	flags |= SELECTION_SKIP_KIND;
+      if (mode == MODE_LIST || archfilter_src)
 	flags |= SELECTION_WITH_SOURCE;
       if (argv[i][0] == '/')
 	flags |= SELECTION_FILELIST | (mode == MODE_ERASE ? SELECTION_INSTALLED_ONLY : 0);
-      rflags = selection_make(pool, &job2, argv[i], flags);
+      if (!keyname)
+        rflags = selection_make(pool, &job2, argv[i], flags);
+      else
+        rflags = selection_make_matchdeps(pool, &job2, argv[i], flags, pool_str2id(pool, keyname, 1), 0);
       if (repofilter.count)
 	selection_filter(pool, &job2, &repofilter);
+      if (archfilter.count)
+	selection_filter(pool, &job2, &archfilter);
+      if (kindfilter.count)
+	selection_filter(pool, &job2, &kindfilter);
       if (!job2.count)
 	{
 	  flags |= SELECTION_NOCASE;
-          rflags = selection_make(pool, &job2, argv[i], flags);
+	  if (!keyname)
+            rflags = selection_make(pool, &job2, argv[i], flags);
+	  else
+	    rflags = selection_make_matchdeps(pool, &job2, argv[i], flags, pool_str2id(pool, keyname, 1), 0);
 	  if (repofilter.count)
 	    selection_filter(pool, &job2, &repofilter);
+	  if (archfilter.count)
+	    selection_filter(pool, &job2, &archfilter);
+	  if (kindfilter.count)
+	    selection_filter(pool, &job2, &kindfilter);
 	  if (job2.count)
 	    printf("[ignoring case for '%s']\n", argv[i]);
 	}
@@ -2735,14 +3008,21 @@ main(int argc, char **argv)
 	queue_push(&job, job2.elements[j]);
       queue_free(&job2);
     }
+  keyname = solv_free(keyname);
 
-  if (!job.count && (mainmode == MODE_UPDATE || mainmode == MODE_DISTUPGRADE || mainmode == MODE_VERIFY || repofilter.count))
+  if (!job.count && (mainmode == MODE_UPDATE || mainmode == MODE_DISTUPGRADE || mainmode == MODE_VERIFY || repofilter.count || archfilter.count || kindfilter.count))
     {
       queue_push2(&job, SOLVER_SOLVABLE_ALL, 0);
       if (repofilter.count)
 	selection_filter(pool, &job, &repofilter);
+      if (archfilter.count)
+	selection_filter(pool, &job, &archfilter);
+      if (kindfilter.count)
+	selection_filter(pool, &job, &kindfilter);
     }
   queue_free(&repofilter);
+  queue_free(&archfilter);
+  queue_free(&kindfilter);
 
   if (!job.count && mainmode != MODE_PATCH)
     {
@@ -2775,6 +3055,11 @@ main(int argc, char **argv)
 		  str = solvable_lookup_str(s, SOLVABLE_LICENSE);
 		  if (str)
 		    printf("License:     %s\n", str);
+#if 0
+		  str = solvable_lookup_sourcepkg(s);
+		  if (str)
+		    printf("Source:      %s\n", str);
+#endif
 		  printf("Description:\n%s\n", solvable_lookup_str(s, SOLVABLE_DESCRIPTION));
 		  printf("\n");
 		}
@@ -2802,8 +3087,10 @@ main(int argc, char **argv)
       exit(0);
     }
 
+#if defined(SUSE) || defined(FEDORA)
   if (mainmode == MODE_PATCH)
-    select_patches(pool, &job);
+    add_patchjobs(pool, &job);
+#endif
 
   // add mode
   for (i = 0; i < job.count; i += 2)
@@ -2818,9 +3105,9 @@ main(int argc, char **argv)
     }
 
   // multiversion test
-  // queue_push2(&job, SOLVER_NOOBSOLETES|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae", 1));
-  // queue_push2(&job, SOLVER_NOOBSOLETES|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-base", 1));
-  // queue_push2(&job, SOLVER_NOOBSOLETES|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-extra", 1));
+  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae", 1));
+  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-base", 1));
+  // queue_push2(&job, SOLVER_MULTIVERSION|SOLVER_SOLVABLE_NAME, pool_str2id(pool, "kernel-pae-extra", 1));
 #if 0
   queue_push2(&job, SOLVER_INSTALL|SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, NAMESPACE_LANGUAGE, 0, REL_NAMESPACE, 1));
   queue_push2(&job, SOLVER_ERASE|SOLVER_CLEANDEPS|SOLVER_SOLVABLE_PROVIDES, pool_rel2id(pool, NAMESPACE_LANGUAGE, 0, REL_NAMESPACE, 1));
@@ -2835,6 +3122,9 @@ rerunsolver:
 #endif
   solv = solver_create(pool);
   solver_set_flag(solv, SOLVER_FLAG_SPLITPROVIDES, 1);
+#ifdef FEDORA
+  solver_set_flag(solv, SOLVER_FLAG_ALLOW_VENDORCHANGE, 1);
+#endif
   if (mainmode == MODE_ERASE)
     solver_set_flag(solv, SOLVER_FLAG_ALLOW_UNINSTALL, 1);	/* don't nag */
   solver_set_flag(solv, SOLVER_FLAG_BEST_OBEY_POLICY, 1);
@@ -2863,6 +3153,7 @@ rerunsolver:
 	    }
 	  for (;;)
 	    {
+	      char inbuf[128], *ip;
 	      printf("Please choose a solution: ");
 	      fflush(stdout);
 	      *inbuf = 0;
@@ -2911,24 +3202,13 @@ rerunsolver:
 #endif
       exit(1);
     }
+
+  /* display transaction to the user and ask for confirmation */
   printf("\n");
   printf("Transaction summary:\n\n");
   transaction_print(trans);
-
 #if defined(SUSE)
-  if (1)
-    {
-      DUChanges duc[4];
-      int i;
-
-      duc[0].path = "/";
-      duc[1].path = "/usr/share/man";
-      duc[2].path = "/sbin";
-      duc[3].path = "/etc";
-      transaction_calc_duchanges(trans, duc, 4);
-      for (i = 0; i < 4; i++)
-        printf("duchanges %s: %d K  %d inodes\n", duc[i].path, duc[i].kbytes, duc[i].files);
-    }
+  showdiskusagechanges(trans);
 #endif
   printf("install size change: %d K\n", transaction_calc_installsizechange(trans));
   printf("\n");
@@ -2948,10 +3228,10 @@ rerunsolver:
       exit(1);
     }
 
+  /* download all new packages */
   queue_init(&checkq);
   newpkgs = transaction_installedresult(trans, &checkq);
   newpkgsfps = 0;
-
   if (newpkgs)
     {
       int downloadsize = 0;
@@ -2973,13 +3253,14 @@ rerunsolver:
 	  struct repoinfo *cinfo;
 	  const unsigned char *chksum;
 	  Id chksumtype;
-	  Dataiterator di;
 
 	  p = checkq.elements[i];
 	  s = pool_id2solvable(pool, p);
 	  if (s->repo == commandlinerepo)
 	    {
 	      loc = solvable_lookup_location(s, &medianr);
+	      if (!loc)
+		continue;
 	      if (!(newpkgsfps[i] = fopen(loc, "r")))
 		{
 		  perror(loc);
@@ -2997,117 +3278,24 @@ rerunsolver:
 	  loc = solvable_lookup_location(s, &medianr);
 	  if (!loc)
 	     continue;
-
+#if defined(ENABLE_RPMDB)
 	  if (pool->installed && pool->installed->nsolvables)
 	    {
-	      /* try a delta first */
-	      char *matchname = strdup(pool_id2str(pool, s->name));
-	      dataiterator_init(&di, pool, s->repo, SOLVID_META, DELTA_PACKAGE_NAME, matchname, SEARCH_STRING);
-	      dataiterator_prepend_keyname(&di, REPOSITORY_DELTAINFO);
-	      while (dataiterator_step(&di))
+	      if ((newpkgsfps[i] = trydeltadownload(s, cinfo, loc)) != 0)
 		{
-		  Id baseevr, op;
-
-		  dataiterator_setpos_parent(&di);
-		  if (pool_lookup_id(pool, SOLVID_POS, DELTA_PACKAGE_EVR) != s->evr ||
-		      pool_lookup_id(pool, SOLVID_POS, DELTA_PACKAGE_ARCH) != s->arch)
-		    continue;
-		  baseevr = pool_lookup_id(pool, SOLVID_POS, DELTA_BASE_EVR);
-		  FOR_PROVIDES(op, pp, s->name)
-		    {
-		      Solvable *os = pool->solvables + op;
-		      if (os->repo == pool->installed && os->name == s->name && os->arch == s->arch && os->evr == baseevr)
-			break;
-		    }
-		  if (op && access("/usr/bin/applydeltarpm", X_OK) == 0)
-		    {
-		      /* base is installed, run sequence check */
-		      const char *seqname;
-		      const char *seqevr;
-		      const char *seqnum;
-		      const char *seq;
-		      const char *dloc;
-		      const char *archstr;
-		      FILE *fp;
-		      char cmd[128];
-		      int newfd;
-
-		      archstr = pool_id2str(pool, s->arch);
-		      if (strlen(archstr) > 10 || strchr(archstr, '\'') != 0)
-			continue;
-
-		      seqname = pool_lookup_str(pool, SOLVID_POS, DELTA_SEQ_NAME);
-		      seqevr = pool_lookup_str(pool, SOLVID_POS, DELTA_SEQ_EVR);
-		      seqnum = pool_lookup_str(pool, SOLVID_POS, DELTA_SEQ_NUM);
-		      seq = pool_tmpjoin(pool, seqname, "-", seqevr);
-		      seq = pool_tmpappend(pool, seq, "-", seqnum);
-		      if (strchr(seq, '\'') != 0)
-			continue;
-#ifdef FEDORA
-		      sprintf(cmd, "/usr/bin/applydeltarpm -a '%s' -c -s '", archstr);
-#else
-		      sprintf(cmd, "/usr/bin/applydeltarpm -c -s '");
-#endif
-		      if (system(pool_tmpjoin(pool, cmd, seq, "'")) != 0)
-			continue;	/* didn't match */
-		      /* looks good, download delta */
-		      chksumtype = 0;
-		      chksum = pool_lookup_bin_checksum(pool, SOLVID_POS, DELTA_CHECKSUM, &chksumtype);
-		      if (!chksumtype)
-			continue;	/* no way! */
-		      dloc = pool_lookup_deltalocation(pool, SOLVID_POS, 0);
-		      if (!dloc)
-			continue;
-		      if (cinfo->type == TYPE_SUSETAGS)
-			{
-			  const char *datadir = repo_lookup_str(cinfo->repo, SOLVID_META, SUSETAGS_DATADIR);
-			  dloc = pool_tmpjoin(pool, datadir ? datadir : "suse", "/", dloc);
-			}
-		      if ((fp = curlfopen(cinfo, dloc, 0, chksum, chksumtype, 0)) == 0)
-			continue;
-		      /* got it, now reconstruct */
-		      newfd = opentmpfile();
-#ifdef FEDORA
-		      sprintf(cmd, "applydeltarpm -a '%s' /dev/fd/%d /dev/fd/%d", archstr, fileno(fp), newfd);
-#else
-		      sprintf(cmd, "applydeltarpm /dev/fd/%d /dev/fd/%d", fileno(fp), newfd);
-#endif
-		      fcntl(fileno(fp), F_SETFD, 0);
-		      if (system(cmd))
-			{
-			  close(newfd);
-			  fclose(fp);
-			  continue;
-			}
-		      lseek(newfd, 0, SEEK_SET);
-		      chksumtype = 0;
-		      chksum = solvable_lookup_bin_checksum(s, SOLVABLE_CHECKSUM, &chksumtype);
-		      if (chksumtype && !verify_checksum(newfd, loc, chksum, chksumtype))
-			{
-			  close(newfd);
-			  fclose(fp);
-			  continue;
-			}
-		      newpkgsfps[i] = fdopen(newfd, "r");
-		      fclose(fp);
-		      break;
-		    }
+		  putchar('d');
+		  fflush(stdout);
+		  continue;		/* delta worked! */
 		}
-	      dataiterator_free(&di);
-	      solv_free(matchname);
 	    }
-
-	  if (newpkgsfps[i])
-	    {
-	      putchar('d');
-	      fflush(stdout);
-	      continue;		/* delta worked! */
-	    }
+#endif
+#ifdef ENABLE_SUSEREPO
 	  if (cinfo->type == TYPE_SUSETAGS)
 	    {
 	      const char *datadir = repo_lookup_str(cinfo->repo, SOLVID_META, SUSETAGS_DATADIR);
 	      loc = pool_tmpjoin(pool, datadir ? datadir : "suse", "/", loc);
 	    }
+#endif
 	  chksumtype = 0;
 	  chksum = solvable_lookup_bin_checksum(s, SOLVABLE_CHECKSUM, &chksumtype);
 	  if ((newpkgsfps[i] = curlfopen(cinfo, loc, 0, chksum, chksumtype, 0)) == 0)
@@ -3122,6 +3310,7 @@ rerunsolver:
     }
 
 #if defined(ENABLE_RPMDB) && (defined(SUSE) || defined(FEDORA))
+  /* check for file conflicts */
   if (newpkgs)
     {
       Queue conflicts;
@@ -3129,16 +3318,17 @@ rerunsolver:
 
       printf("Searching for file conflicts\n");
       queue_init(&conflicts);
-      fcstate.rpmdbstate = 0;
+      fcstate.rpmstate = rpm_state_create(pool, rootdir);
       fcstate.newpkgscnt = newpkgs;
       fcstate.checkq = &checkq;
       fcstate.newpkgsfps = newpkgsfps;
-      pool_findfileconflicts(pool, &checkq, newpkgs, &conflicts, &fileconflict_cb, &fcstate);
+      pool_findfileconflicts(pool, &checkq, newpkgs, &conflicts, FINDFILECONFLICTS_USE_SOLVABLEFILELIST | FINDFILECONFLICTS_CHECK_DIRALIASING | FINDFILECONFLICTS_USE_ROOTDIR, &fileconflict_cb, &fcstate);
+      fcstate.rpmstate = rpm_state_free(fcstate.rpmstate);
       if (conflicts.count)
 	{
 	  printf("\n");
-	  for (i = 0; i < conflicts.count; i += 5)
-	    printf("file %s of package %s conflicts with package %s\n", pool_id2str(pool, conflicts.elements[i]), pool_solvid2str(pool, conflicts.elements[i + 1]), pool_solvid2str(pool, conflicts.elements[i + 3]));
+	  for (i = 0; i < conflicts.count; i += 6)
+	    printf("file %s of package %s conflicts with package %s\n", pool_id2str(pool, conflicts.elements[i]), pool_solvid2str(pool, conflicts.elements[i + 1]), pool_solvid2str(pool, conflicts.elements[i + 4]));
 	  printf("\n");
 	  if (yesno("Re-run solver (y/n/q)? "))
 	    {
@@ -3156,6 +3346,7 @@ rerunsolver:
     }
 #endif
 
+  /* and finally commit the transaction */
   printf("Committing transaction:\n\n");
   transaction_order(trans, 0);
   for (i = 0; i < trans->steps.count; i++)
@@ -3166,10 +3357,11 @@ rerunsolver:
       Solvable *s;
       int j;
       FILE *fp;
+      Id type;
 
       p = trans->steps.elements[i];
       s = pool_id2solvable(pool, p);
-      Id type = transaction_type(trans, p, SOLVER_TRANSACTION_RPM_ONLY);
+      type = transaction_type(trans, p, SOLVER_TRANSACTION_RPM_ONLY);
       switch(type)
 	{
 	case SOLVER_TRANSACTION_ERASE:

@@ -219,7 +219,7 @@ end
 class Repo_rpmmd < Repo_generic
 
   def find(what)
-    di = @handle.Dataiterator(Solv::SOLVID_META, Solv::REPOSITORY_REPOMD_TYPE, what, Solv::Dataiterator::SEARCH_STRING)
+    di = @handle.Dataiterator_meta(Solv::REPOSITORY_REPOMD_TYPE, what, Solv::Dataiterator::SEARCH_STRING)
     di.prepend_keyname(Solv::REPOSITORY_REPOMD)
     for d in di
       dp = d.parentpos()
@@ -337,7 +337,7 @@ end
 class Repo_susetags < Repo_generic
 
   def find(what)
-    di = @handle.Dataiterator(Solv::SOLVID_META, Solv::SUSETAGS_FILE_NAME, what, Solv::Dataiterator::SEARCH_STRING)
+    di = @handle.Dataiterator_meta(Solv::SUSETAGS_FILE_NAME, what, Solv::Dataiterator::SEARCH_STRING)
     di.prepend_keyname(Solv::SUSETAGS_FILE)
     for d in di
       dp = d.parentpos()
@@ -366,8 +366,8 @@ class Repo_susetags < Repo_generic
     @handle.add_content(f, 0)
     f.close
     puts "fetching"
-    defvendorid = @handle.lookup_id(Solv::SOLVID_META, Solv::SUSETAGS_DEFAULTVENDOR)
-    descrdir = @handle.lookup_str(Solv::SOLVID_META, Solv::SUSETAGS_DESCRDIR)
+    defvendorid = @handle.meta.lookup_id(Solv::SUSETAGS_DEFAULTVENDOR)
+    descrdir = @handle.meta.lookup_str(Solv::SUSETAGS_DESCRDIR)
     descrdir = "suse/setup/descr" unless descrdir
     (filename, filechksum) = find('packages.gz')
     (filename, filechksum) = find('packages') unless filename
@@ -428,7 +428,7 @@ class Repo_susetags < Repo_generic
 
   def add_exts
     repodata = @handle.add_repodata(0)
-    di = @handle.Dataiterator(Solv::SOLVID_META, Solv::SUSETAGS_FILE_NAME, nil, 0)
+    di = @handle.Dataiterator_meta(Solv::SUSETAGS_FILE_NAME, nil, 0)
     di.prepend_keyname(Solv::SUSETAGS_FILE)
     for d in di
       filename = d.str
@@ -449,8 +449,8 @@ class Repo_susetags < Repo_generic
       return true
     end
     puts "fetching]\n"
-    defvendorid = @handle.lookup_id(Solv::SOLVID_META, Solv::SUSETAGS_DEFAULTVENDOR)
-    descrdir = @handle.lookup_str(Solv::SOLVID_META, Solv::SUSETAGS_DESCRDIR)
+    defvendorid = @handle.meta.lookup_id(Solv::SUSETAGS_DEFAULTVENDOR)
+    descrdir = @handle.meta.lookup_str(Solv::SUSETAGS_DESCRDIR)
     descrdir = "suse/setup/descr" unless descrdir
     filechksum = repodata.lookup_checksum(Solv::SOLVID_META, Solv::SUSETAGS_FILE_CHECKSUM)
     f = download("#{descrdir}/#{filename}", true, filechksum)
@@ -464,7 +464,7 @@ class Repo_susetags < Repo_generic
   end
 
   def packagespath()
-    datadir = @handle.lookup_str(Solv::SOLVID_META, Solv::SUSETAGS_DATADIR)
+    datadir = @handle.meta.lookup_str(Solv::SUSETAGS_DATADIR)
     datadir = "suse" unless datadir
     return datadir + '/'
   end
@@ -492,7 +492,9 @@ class Repo_system < Repo_generic
     if @handle.respond_to? :add_products
       @handle.add_products("/etc/products.d", Solv::Repo::REPO_NO_INTERNALIZE)
     end
-    @handle.add_rpmdb(nil, Solv::Repo::REPO_REUSE_REPODATA)
+    f = Solv::xfopen(cachepath())
+    @handle.add_rpmdb_reffp(f, Solv::Repo::REPO_REUSE_REPODATA)
+    f.close
     writecachedrepo(nil)
     return true
   end
@@ -501,7 +503,7 @@ end
 args = ARGV
 cmd = args.shift
 
-cmdabbrev = { 'li' => 'list', 'in' => 'install', 'rm' => 'erase',
+cmdabbrev = { 'ls' => 'list', 'in' => 'install', 'rm' => 'erase',
               've' => 'verify', 'se' => 'search' }
 cmd = cmdabbrev[cmd] if cmdabbrev.has_key?(cmd)
 
@@ -525,7 +527,7 @@ end
 for reposdir in reposdirs do
   next unless FileTest.directory?(reposdir)
   for reponame in Dir["#{reposdir}/*.repo"].sort do
-    cfg = IniFile.new(reponame)
+    cfg = IniFile.load(reponame)
     cfg.each_section do |ali|
       repoattr = { 'alias' => ali, 'enabled' => 0, 'priority' => 99, 'autorefresh' => 1, 'type' => 'rpm-md', 'metadata_expire' => 900}
       repoattr.update(cfg[ali])
@@ -558,7 +560,7 @@ end
 if cmd == 'search'
   pool.createwhatprovides()
   sel = pool.Selection
-  for di in pool.Dataiterator(0, Solv::SOLVABLE_NAME, args[0], Solv::Dataiterator::SEARCH_SUBSTRING | Solv::Dataiterator::SEARCH_NOCASE)
+  for di in pool.Dataiterator(Solv::SOLVABLE_NAME, args[0], Solv::Dataiterator::SEARCH_SUBSTRING | Solv::Dataiterator::SEARCH_NOCASE)
     sel.add_raw(Solv::Job::SOLVER_SOLVABLE, di.solvid)
   end
   for s in sel.solvables
@@ -639,7 +641,7 @@ while true
   break if problems.empty?
   for problem in problems
     puts "Problem #{problem.id}/#{problems.count}:"
-    puts problem.findproblemrule.info.problemstr
+    puts problem
     solutions = problem.solutions
     for solution in solutions
       puts "  Solution #{solution.id}:"
@@ -679,7 +681,7 @@ if trans.isempty?
 end
 
 puts "\nTransaction summary:\n"
-for cl in trans.classify()
+for cl in trans.classify(Solv::Transaction::SOLVER_TRANSACTION_SHOW_OBSOLETES | Solv::Transaction::SOLVER_TRANSACTION_OBSOLETE_IS_UPGRADE)
   if cl.type == Solv::Transaction::SOLVER_TRANSACTION_ERASE
     puts "#{cl.count} erased packages:"
   elsif cl.type == Solv::Transaction::SOLVER_TRANSACTION_INSTALL
@@ -693,9 +695,9 @@ for cl in trans.classify()
   elsif cl.type == Solv::Transaction::SOLVER_TRANSACTION_UPGRADED
     puts "#{cl.count} upgraded packages:"
   elsif cl.type == Solv::Transaction::SOLVER_TRANSACTION_VENDORCHANGE
-    puts "#{cl.count} vendor changes from '#{cl.fromdep}' to '#{cl.todep}':"
+    puts "#{cl.count} vendor changes from '#{cl.fromstr}' to '#{cl.tostr}':"
   elsif cl.type == Solv::Transaction::SOLVER_TRANSACTION_ARCHCHANGE
-    puts "#{cl.count} arch changes from '#{cl.fromdep}' to '#{cl.todep}':"
+    puts "#{cl.count} arch changes from '#{cl.fromstr}' to '#{cl.tostr}':"
   else
     next
   end
@@ -710,15 +712,15 @@ for cl in trans.classify()
 end
 puts "install size change: #{trans.calc_installsizechange()} K\n\n"
 
-while true:
+while true
   print("OK to continue (y/n)? ")
   STDOUT.flush
   yn = STDIN.gets.strip
   break if yn == 'y'
-  abort if yn == 'n'
+  abort if yn == 'n' || yn == 'q'
 end
 
-newpkgs = trans.newpackages()
+newpkgs = trans.newsolvables()
 newpkgsfp = {}
 if !newpkgs.empty?
   downloadsize = 0
@@ -743,7 +745,7 @@ end
 
 puts "Committing transaction:"
 puts
-trans.order(0)
+trans.order()
 for p in trans.steps
   steptype = trans.steptype(p, Solv::Transaction::SOLVER_TRANSACTION_RPM_ONLY)
   if steptype == Solv::Transaction::SOLVER_TRANSACTION_ERASE

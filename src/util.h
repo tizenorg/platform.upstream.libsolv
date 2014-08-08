@@ -16,6 +16,10 @@
 #include <stddef.h>
 #include <string.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * malloc
  * exits with error message on error
@@ -34,6 +38,9 @@ extern char *solv_dupjoin(const char *str1, const char *str2, const char *str3);
 extern char *solv_dupappend(const char *str1, const char *str2, const char *str3);
 extern int solv_hex2bin(const char **strp, unsigned char *buf, int bufl);
 extern char *solv_bin2hex(const unsigned char *buf, int l, char *str);
+extern size_t solv_validutf8(const char *buf);
+extern char *solv_latin1toutf8(const char *buf);
+extern char *solv_replacebadutf8(const char *buf, int replchar);
 
 
 static inline void *solv_extend(void *buf, size_t len, size_t nmemb, size_t size, size_t block)
@@ -82,4 +89,31 @@ static inline void *solv_calloc_block(size_t len, size_t size, size_t block)
   memset(buf, 0, ((len + block) & ~block) * size);
   return buf;
 }
+
+static inline void *solv_memdup(void *buf, size_t len)
+{
+  void *newbuf;
+  if (!buf)
+    return 0;
+  newbuf = solv_malloc(len);
+  if (len)
+    memcpy(newbuf, buf, len);
+  return newbuf;
+}
+
+static inline void *solv_memdup2(void *buf, size_t num, size_t len)
+{
+  void *newbuf;
+  if (!buf)
+    return 0;
+  newbuf = solv_malloc2(num, len);
+  if (num)
+    memcpy(newbuf, buf, num * len);
+  return newbuf;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* LIBSOLV_UTIL_H */

@@ -17,7 +17,10 @@
 #include "pool.h"
 #include "solver.h"
 
-extern Id *solver_create_decisions_obsoletesmap(Solver *solv);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern void solver_printruleelement(Solver *solv, int type, Rule *r, Id v);
 extern void solver_printrule(Solver *solv, int type, Rule *r);
 extern void solver_printruleclass(Solver *solv, int type, Rule *r);
@@ -34,13 +37,9 @@ extern void solver_printtrivial(Solver *solv);
 
 extern void transaction_print(Transaction *trans);
 
-extern const char *solver_select2str(Pool *pool, Id select, Id what);
-extern const char *pool_job2str(Pool *pool, Id how, Id what, Id flagmask);
-extern const char *pool_selection2str(Pool *pool, Queue *selection, Id flagmask);
-extern const char *solver_problemruleinfo2str(Solver *solv, SolverRuleinfo type, Id source, Id target, Id dep);
-extern const char *solver_solutionelement2str(Solver *solv, Id p, Id rp);
-extern const char *policy_illegal2str(Solver *solv, int illegal, Solvable *s, Solvable *rs);
-
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBSOLV_SOLVERDEBUG_H */
 

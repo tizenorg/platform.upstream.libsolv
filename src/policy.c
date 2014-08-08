@@ -21,6 +21,7 @@
 #include "policy.h"
 #include "poolvendor.h"
 #include "poolarch.h"
+#include "cplxdeps.h"
 
 
 /*-----------------------------------------------------------------*/
@@ -51,6 +52,15 @@ prune_to_best_version_sortcmp(const void *ap, const void *bp, void *dp)
       nb = pool_id2str(pool, sb->name);
       return strcmp(na, nb);
     }
+  if (sa->arch != sb->arch)
+    {
+      int aa, ab;
+      aa = (sa->arch <= pool->lastarch) ? pool->id2arch[sa->arch] : 0;
+      ab = (sb->arch <= pool->lastarch) ? pool->id2arch[sb->arch] : 0;
+      if (aa != ab && aa > 1 && ab > 1)
+	return aa - ab;		/* lowest score first */
+    }
+
   /* the same name, bring installed solvables to the front */
   if (pool->installed)
     {
@@ -106,9 +116,78 @@ prune_to_highest_prio(Pool *pool, Queue *plist)
   plist->count = j;
 }
 
+
+/* installed packages involed in a dup operation can only be kept
+ * if they are identical to a non-installed one */
 static void
-prune_to_highest_prio_per_name(Pool *pool, Queue *plist)
+solver_prune_installed_dup_packages(Solver *solv, Queue *plist)
 {
+  Pool *pool = solv->pool;
+  int i, j, bestprio = 0;
+
+  /* find bestprio (again) */
+  for (i = 0; i < plist->count; i++)
+    {
+      Solvable *s = pool->solvables + plist->elements[i];
+      if (s->repo != pool->installed)
+	{
+	  bestprio = s->repo->priority;
+	  break;
+	}
+    }
+  if (i == plist->count)
+    return;	/* only installed packages, could not find prio */
+  for (i = j = 0; i < plist->count; i++)
+    {
+      Id p = plist->elements[i];
+      Solvable *s = pool->solvables + p;
+      if (s->repo != pool->installed && s->repo->priority < bestprio)
+	continue;
+      if (s->repo == pool->installed && (solv->dupmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, p))))
+	{
+	  Id p2, pp2;
+	  int keepit = 0;
+	  FOR_PROVIDES(p2, pp2, s->name)
+	    {
+	      Solvable *s2 = pool->solvables + p2;
+	      if (s2->repo == pool->installed || s2->evr != s->evr || s2->repo->priority < bestprio)
+		continue;
+	      if (!solvable_identical(s, s2))
+		continue;
+	      keepit = 1;
+	      if (s2->repo->priority > bestprio)
+		{
+		  /* new max prio! */
+		  bestprio = s2->repo->priority;
+		  j = 0;
+		}
+	    }
+	  if (!keepit)
+	    continue;	/* no identical package found, ignore installed package */
+	}
+      plist->elements[j++] = p;
+    }
+  if (j)
+    plist->count = j;
+}
+
+/*
+ * like prune_to_highest_prio, but calls solver prune_installed_dup_packages
+ * when there are dup packages
+ */
+static inline void
+solver_prune_to_highest_prio(Solver *solv, Queue *plist)
+{
+  prune_to_highest_prio(solv->pool, plist);
+  if (plist->count > 1 && solv->pool->installed && (solv->dupmap_all || solv->dupinvolvedmap.size))
+    solver_prune_installed_dup_packages(solv, plist);
+}
+
+
+static void
+solver_prune_to_highest_prio_per_name(Solver *solv, Queue *plist)
+{
+  Pool *pool = solv->pool;
   Queue pq;
   int i, j, k;
   Id name;
@@ -122,7 +201,7 @@ prune_to_highest_prio_per_name(Pool *pool, Queue *plist)
       if (pool->solvables[plist->elements[i]].name != name)
 	{
 	  if (pq.count > 2)
-	    prune_to_highest_prio(pool, &pq);
+	    solver_prune_to_highest_prio(solv, &pq);
 	  for (k = 0; k < pq.count; k++)
 	    plist->elements[j++] = pq.elements[k];
 	  queue_empty(&pq);
@@ -131,13 +210,201 @@ prune_to_highest_prio_per_name(Pool *pool, Queue *plist)
 	}
     }
   if (pq.count > 2)
-    prune_to_highest_prio(pool, &pq);
+    solver_prune_to_highest_prio(solv, &pq);
   for (k = 0; k < pq.count; k++)
     plist->elements[j++] = pq.elements[k];
   queue_free(&pq);
   plist->count = j;
 }
 
+
+#ifdef ENABLE_COMPLEX_DEPS
+
+static void
+check_complex_dep(Solver *solv, Id dep, Map *m, Queue **cqp)
+{
+  Pool *pool = solv->pool;
+  Queue q;
+  queue_init(&q);
+  Id p;
+  int i, qcnt;
+
+#if 0
+  printf("check_complex_dep %s\n", pool_dep2str(pool, dep));
+#endif
+  i = pool_normalize_complex_dep(pool, dep, &q, CPLXDEPS_EXPAND);
+  if (i == 0 || i == 1)
+    {
+      queue_free(&q);
+      return;
+    }
+  qcnt = q.count;
+  for (i = 0; i < qcnt; i++)
+    {
+      for (; (p = q.elements[i]) != 0; i++)
+	{
+	  if (p < 0)
+	    {
+	      if (solv->decisionmap[-p] > 0)
+		continue;
+	      if (solv->decisionmap[-p] < 0)
+		break;
+	      queue_push(&q, -p);
+	    }
+	  if (p > 0 && qcnt == q.count)
+	    MAPSET(m, p);
+	}
+      if (q.elements[i])
+	{
+#if 0
+	  printf("complex dep block cannot be true\n");
+#endif
+	  while (q.elements[i])
+	    i++;
+	  if (qcnt != q.count)
+	    queue_truncate(&q, qcnt);
+	}
+      else if (qcnt != q.count)
+	{
+	  int j, k;
+	  Queue *cq = *cqp;
+#if 0
+	  printf("add new complex dep block\n");
+	  for (j = qcnt; j < q.count; j++)
+	    printf("  - %s\n", pool_solvid2str(pool, q.elements[j]));
+#endif
+	  if (!cq)
+	    {
+	      cq = solv_calloc(1, sizeof(Queue));
+	      queue_init(cq);
+	      *cqp = cq;
+	      queue_insertn(cq, 0, 256, 0);
+	    }
+	  for (j = qcnt; j < q.count; j++)
+	    {
+	      p = q.elements[j];
+	      for (k = 256; k < cq->count; k += 2)
+		if (cq->elements[k + 1] == dep && cq->elements[k] == p)
+		  break;
+	      if (k == cq->count)
+		{
+	          queue_push2(cq, p, dep);
+		  cq->elements[p & 255] |= (1 << (p >> 8 & 31));
+		}
+	    }
+	  queue_truncate(&q, qcnt);
+	}
+    }
+  queue_free(&q);
+}
+
+static void
+recheck_complex_dep(Solver *solv, Id p, Map *m, Queue **cqp)
+{
+  Queue *cq = *cqp;
+  int i;
+#if 0
+  printf("recheck_complex_dep for package %s\n", pool_solvid2str(solv->pool, p));
+#endif
+  for (i = 256; i < cq->count; i += 2)
+    if (cq->elements[i] == p)
+      break;
+  if (i == cq->count)
+    return;	/* false alert */
+  if (solv->decisionmap[p] <= 0)
+    return;	/* just in case... */
+  memset(cq->elements, 0, sizeof(Id) * 256);
+  for (i = 256; i < cq->count; i += 2)
+    if (cq->elements[i] == p)
+      {
+	Id dep = cq->elements[i + 1];
+	queue_deleten(cq, i, 2);
+	i -= 2;
+        check_complex_dep(solv, dep, m, &cq);
+      }
+    else
+      {
+	Id pp = cq->elements[i];
+        cq->elements[pp & 255] |= (1 << (pp >> 8 & 31));
+      }
+}
+
+#endif
+
+
+void
+policy_update_recommendsmap(Solver *solv)
+{
+  Pool *pool = solv->pool;
+  Solvable *s;
+  Id p, pp, rec, *recp, sug, *sugp;
+
+  if (solv->recommends_index < 0)
+    {
+      MAPZERO(&solv->recommendsmap);
+      MAPZERO(&solv->suggestsmap);
+#ifdef ENABLE_COMPLEX_DEPS
+      if (solv->recommendscplxq)
+	{
+	  queue_free(solv->recommendscplxq);
+	  solv->recommendscplxq = solv_free(solv->recommendscplxq);
+	}
+      if (solv->suggestscplxq)
+	{
+	  queue_free(solv->suggestscplxq);
+	  solv->suggestscplxq = solv_free(solv->suggestscplxq);
+	}
+#endif
+      solv->recommends_index = 0;
+    }
+  while (solv->recommends_index < solv->decisionq.count)
+    {
+      p = solv->decisionq.elements[solv->recommends_index++];
+      if (p < 0)
+	continue;
+      s = pool->solvables + p;
+#ifdef ENABLE_COMPLEX_DEPS
+      if (solv->recommendscplxq && solv->recommendscplxq->elements[p & 255])
+	if (solv->recommendscplxq->elements[p & 255] & (1 << (p >> 8 & 31)))
+	  recheck_complex_dep(solv, p, &solv->recommendsmap, &solv->recommendscplxq);
+      if (solv->suggestscplxq && solv->suggestscplxq->elements[p & 255])
+	if (solv->suggestscplxq->elements[p & 255] & (1 << (p >> 8 & 31)))
+	  recheck_complex_dep(solv, p, &solv->suggestsmap, &solv->suggestscplxq);
+#endif
+      if (s->recommends)
+	{
+	  recp = s->repo->idarraydata + s->recommends;
+          while ((rec = *recp++) != 0)
+	    {
+#ifdef ENABLE_COMPLEX_DEPS
+	      if (pool_is_complex_dep(pool, rec))
+		{
+		  check_complex_dep(solv, rec, &solv->recommendsmap, &solv->recommendscplxq);
+		  continue;
+		}
+#endif
+	      FOR_PROVIDES(p, pp, rec)
+	        MAPSET(&solv->recommendsmap, p);
+	    }
+	}
+      if (s->suggests)
+	{
+	  sugp = s->repo->idarraydata + s->suggests;
+          while ((sug = *sugp++) != 0)
+	    {
+#ifdef ENABLE_COMPLEX_DEPS
+	      if (pool_is_complex_dep(pool, sug))
+		{
+		  check_complex_dep(solv, sug, &solv->suggestsmap, &solv->suggestscplxq);
+		  continue;
+		}
+#endif
+	      FOR_PROVIDES(p, pp, sug)
+	        MAPSET(&solv->suggestsmap, p);
+	    }
+	}
+    }
+}
 
 /*
  * prune to recommended/suggested packages.
@@ -150,7 +417,7 @@ prune_to_recommended(Solver *solv, Queue *plist)
   Pool *pool = solv->pool;
   int i, j, k, ninst;
   Solvable *s;
-  Id p, pp, rec, *recp, sug, *sugp;
+  Id p;
 
   ninst = 0;
   if (pool->installed)
@@ -167,33 +434,8 @@ prune_to_recommended(Solver *solv, Queue *plist)
     return;
 
   /* update our recommendsmap/suggestsmap */
-  if (solv->recommends_index < 0)
-    {
-      MAPZERO(&solv->recommendsmap);
-      MAPZERO(&solv->suggestsmap);
-      solv->recommends_index = 0;
-    }
-  while (solv->recommends_index < solv->decisionq.count)
-    {
-      p = solv->decisionq.elements[solv->recommends_index++];
-      if (p < 0)
-	continue;
-      s = pool->solvables + p;
-      if (s->recommends)
-	{
-	  recp = s->repo->idarraydata + s->recommends;
-          while ((rec = *recp++) != 0)
-	    FOR_PROVIDES(p, pp, rec)
-	      MAPSET(&solv->recommendsmap, p);
-	}
-      if (s->suggests)
-	{
-	  sugp = s->repo->idarraydata + s->suggests;
-          while ((sug = *sugp++) != 0)
-	    FOR_PROVIDES(p, pp, sug)
-	      MAPSET(&solv->suggestsmap, p);
-	}
-    }
+  if (solv->recommends_index < solv->decisionq.count)
+    policy_update_recommendsmap(solv);
 
   /* prune to recommended/supplemented */
   ninst = 0;
@@ -388,7 +630,7 @@ trj_visit(struct trj_data *trj, Id node)
       trj->nstack = stackstart;	/* empty stack */
     }
 }
-  
+
 /*
  * remove entries from plist that are obsoleted by other entries
  * with different name.
@@ -400,7 +642,7 @@ prune_obsoleted(Pool *pool, Queue *plist)
   struct trj_data trj;
   int i, j;
   Solvable *s;
-  
+
   if (plist->count <= 16)
     {
       memset(data_buf, 0, sizeof(data_buf));
@@ -534,7 +776,7 @@ move_installed_to_front(Pool *pool, Queue *plist)
  * sort list of packages (given through plist) by name and evr
  * return result through plist
  */
-static void
+void
 prune_to_best_version(Pool *pool, Queue *plist)
 {
   int i, j;
@@ -594,48 +836,6 @@ prune_to_best_version(Pool *pool, Queue *plist)
 }
 
 
-/* legacy, do not use anymore!
- * (rates arch higher than version, but thats a policy)
- */
-
-static void
-prune_best_arch_name_version(const Solver *solv, Pool *pool, Queue *plist)
-{
-  if (plist->count > 1)
-    prune_to_best_arch(pool, plist);
-  if (plist->count > 1)
-    prune_to_best_version(pool, plist);
-}
-
-/* installed packages involed in a dup operation can only be kept
- * if they are identical to a non-installed one */
-static void
-prune_installed_dup_packages(Solver *solv, Queue *plist)
-{
-  Pool *pool = solv->pool;
-  int i, j, k;
-
-  for (i = j = 0; i < plist->count; i++)
-    {
-      Id p = plist->elements[i];
-      Solvable *s = pool->solvables + p;
-      if (s->repo == pool->installed && (solv->dupmap_all || (solv->dupinvolvedmap.size && MAPTST(&solv->dupinvolvedmap, p))))
-	{
-	  for (k = 0; k < plist->count; k++)
-	    {
-	      Solvable *s2 = pool->solvables + plist->elements[k];
-	      if (s2->repo != pool->installed && solvable_identical(s, s2))
-		break;
-	    }
-	  if (k == plist->count)
-	    continue;	/* no identical package found, ignore installed package */
-	}
-      plist->elements[j++] = p;
-    }
-  if (j)
-    plist->count = j;
-}
-
 /*
  *  POLICY_MODE_CHOOSE:     default, do all pruning steps
  *  POLICY_MODE_RECOMMEND:  leave out prune_to_recommended
@@ -648,17 +848,16 @@ policy_filter_unwanted(Solver *solv, Queue *plist, int mode)
   if (plist->count > 1)
     {
       if (mode != POLICY_MODE_SUGGEST)
-        prune_to_highest_prio(pool, plist);
+        solver_prune_to_highest_prio(solv, plist);
       else
-        prune_to_highest_prio_per_name(pool, plist);
-      /* installed dup packages need special treatment as prio pruning
-       * does not prune installed packages */
-      if (plist->count > 1 && pool->installed && (solv->dupmap_all || solv->dupinvolvedmap.size))
-	prune_installed_dup_packages(solv, plist);
+        solver_prune_to_highest_prio_per_name(solv, plist);
     }
+  if (plist->count > 1)
+    prune_to_best_arch(pool, plist);
+  if (plist->count > 1)
+    prune_to_best_version(pool, plist);
   if (plist->count > 1 && mode == POLICY_MODE_CHOOSE)
     prune_to_recommended(solv, plist);
-  prune_best_arch_name_version(solv, pool, plist);
 }
 
 
@@ -741,7 +940,7 @@ policy_is_illegal(Solver *solv, Solvable *is, Solvable *s, int ignore)
 }
 
 /*-------------------------------------------------------------------
- * 
+ *
  * create reverse obsoletes map for installed solvables
  *
  * For each installed solvable find which packages with *different* names
@@ -828,12 +1027,12 @@ policy_create_obsolete_index(Solver *solv)
 
 /*
  * find update candidates
- * 
+ *
  * s: installed solvable to be updated
  * qs: [out] queue to hold Ids of candidates
  * allow_all: 0 = dont allow downgrades, 1 = allow all candidates
  *            2 = dup mode
- * 
+ *
  */
 void
 policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allow_all)
@@ -871,6 +1070,8 @@ policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allow_all)
       ps = pool->solvables + p;
       if (s->name == ps->name)	/* name match */
 	{
+	  if (pool->implicitobsoleteusescolors && !pool_colormatch(pool, s, ps))
+	    continue;
 	  if (!allowdowngrade && pool_evrcmp(pool, s->evr, ps->evr, EVRCMP_COMPARE) > 0)
 	    continue;
 	}
@@ -878,6 +1079,11 @@ policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allow_all)
 	continue;
       else if (!solv->noupdateprovide && ps->obsoletes)   /* provides/obsoletes combination ? */
 	{
+	  /* check if package ps obsoletes installed package s */
+	  /* implicitobsoleteusescolors is somewhat wrong here, but we nevertheless
+	   * use it to limit our update candidates */
+	  if ((pool->obsoleteusescolors || pool->implicitobsoleteusescolors) && !pool_colormatch(pool, s, ps))
+	    continue;
 	  obsp = ps->repo->idarraydata + ps->obsoletes;
 	  while ((obs = *obsp++) != 0)	/* for all obsoletes */
 	    {
@@ -885,8 +1091,6 @@ policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allow_all)
 		{
 		  Solvable *ps2 = pool->solvables + p2;
 		  if (!pool->obsoleteusesprovides && !pool_match_nevr(pool, ps2, obs))
-		    continue;
-		  if (pool->obsoleteusescolors && !pool_colormatch(pool, s, ps2))
 		    continue;
 		  if (p2 == n)		/* match ! */
 		    break;
@@ -925,8 +1129,47 @@ policy_findupdatepackages(Solver *solv, Solvable *s, Queue *qs, int allow_all)
 	    continue;
 	  if (!allowvendorchange && s->vendor != ps->vendor && policy_illegal_vendorchange(solv, s, ps))
 	    continue;
+	  /* implicitobsoleteusescolors is somewhat wrong here, but we nevertheless
+	   * use it to limit our update candidates */
+	  if (pool->implicitobsoleteusescolors && !pool_colormatch(pool, s, ps))
+	    continue;
 	  queue_push(qs, p);
 	}
     }
+}
+
+const char *
+policy_illegal2str(Solver *solv, int illegal, Solvable *s, Solvable *rs)
+{
+  Pool *pool = solv->pool;
+  const char *str;
+  if (illegal == POLICY_ILLEGAL_DOWNGRADE)
+    {
+      str = pool_tmpjoin(pool, "downgrade of ", pool_solvable2str(pool, s), 0);
+      return pool_tmpappend(pool, str, " to ", pool_solvable2str(pool, rs));
+    }
+  if (illegal == POLICY_ILLEGAL_NAMECHANGE)
+    {
+      str = pool_tmpjoin(pool, "name change of ", pool_solvable2str(pool, s), 0);
+      return pool_tmpappend(pool, str, " to ", pool_solvable2str(pool, rs));
+    }
+  if (illegal == POLICY_ILLEGAL_ARCHCHANGE)
+    {
+      str = pool_tmpjoin(pool, "architecture change of ", pool_solvable2str(pool, s), 0);
+      return pool_tmpappend(pool, str, " to ", pool_solvable2str(pool, rs));
+    }
+  if (illegal == POLICY_ILLEGAL_VENDORCHANGE)
+    {
+      str = pool_tmpjoin(pool, "vendor change from '", pool_id2str(pool, s->vendor), "' (");
+      if (rs->vendor)
+	{
+          str = pool_tmpappend(pool, str, pool_solvable2str(pool, s), ") to '");
+          str = pool_tmpappend(pool, str, pool_id2str(pool, rs->vendor), "' (");
+	}
+      else
+        str = pool_tmpappend(pool, str, pool_solvable2str(pool, s), ") to no vendor (");
+      return pool_tmpappend(pool, str, pool_solvable2str(pool, rs), ")");
+    }
+  return "unknown illegal change";
 }
 

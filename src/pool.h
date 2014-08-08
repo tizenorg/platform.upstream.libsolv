@@ -7,15 +7,11 @@
 
 /*
  * pool.h
- * 
+ *
  */
 
 #ifndef LIBSOLV_POOL_H
 #define LIBSOLV_POOL_H
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #include <stdio.h>
 
@@ -29,6 +25,10 @@ extern "C" {
 
 /* well known ids */
 #include "knownid.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* well known solvable */
 #define SYSTEMSOLVABLE		1
@@ -49,7 +49,7 @@ typedef struct _Datapos {
   Id solvid;
   Id repodataid;
   Id schema;
-  Id dp; 
+  Id dp;
 } Datapos;
 
 struct _Pool_tmpspace {
@@ -119,7 +119,7 @@ struct _Pool {
   /* search position */
   Datapos pos;
 
-  Queue pooljobs;		/* fixed jobs, like USERINSTALLED/NOOBSOLETES */
+  Queue pooljobs;		/* fixed jobs, like USERINSTALLED/MULTIVERSION */
 
 #ifdef LIBSOLV_INTERNAL
   /* flags to tell the library how the installed package manager works */
@@ -128,14 +128,16 @@ struct _Pool {
   int obsoleteusesprovides;	/* true: obsoletes are matched against provides, not names */
   int implicitobsoleteusesprovides;	/* true: implicit obsoletes due to same name are matched against provides, not names */
   int obsoleteusescolors;	/* true: obsoletes check arch color */
+  int implicitobsoleteusescolors;	/* true: implicit obsoletes check arch color */
   int noinstalledobsoletes;	/* true: ignore obsoletes of installed packages */
   int forbidselfconflicts;	/* true: packages which conflict with itself are not installable */
+  int noobsoletesmultiversion;	/* true: obsoletes are ignored for multiversion installs */
 
   Id noarchid;			/* ARCH_NOARCH, ARCH_ALL, ARCH_ANY, ... */
 
   /* hash for rel unification */
   Hashtable relhashtbl;		/* hashtable: (name,evr,op)Hash -> Id */
-  Hashmask relhashmask;
+  Hashval relhashmask;
 
   Id *languagecache;
   int languagecacheother;
@@ -149,12 +151,17 @@ struct _Pool {
   char *rootdir;
 
   int (*custom_vendorcheck)(struct _Pool *, Solvable *, Solvable *);
+
+  int addfileprovidesfiltered;	/* 1: only use filtered file list for addfileprovides */
+  int addedfileprovides;	/* true: application called addfileprovides */
+  Queue lazywhatprovidesq;	/* queue to store old whatprovides offsets */
 #endif
 };
 
 #define DISTTYPE_RPM	0
 #define DISTTYPE_DEB	1
 #define DISTTYPE_ARCH   2
+#define DISTTYPE_HAIKU  3
 
 #define SOLV_FATAL			(1<<0)
 #define SOLV_ERROR			(1<<1)
@@ -180,6 +187,9 @@ struct _Pool {
 #define POOL_FLAG_OBSOLETEUSESCOLORS			5
 #define POOL_FLAG_NOINSTALLEDOBSOLETES			6
 #define POOL_FLAG_HAVEDISTEPOCH				7
+#define POOL_FLAG_NOOBSOLETESMULTIVERSION		8
+#define POOL_FLAG_ADDFILEPROVIDESFILTERED		9
+#define POOL_FLAG_IMPLICITOBSOLETEUSESCOLORS		10
 
 /* ----------------------------------------------- */
 
@@ -202,6 +212,9 @@ struct _Pool {
 #define REL_ARCH	20
 #define REL_FILECONFLICT	21
 #define REL_COND	22
+#define REL_COMPAT	23
+#define REL_KIND	24	/* for filters only */
+#define REL_MULTIARCH	25	/* debian multiarch annotation */
 
 #if !defined(__GNUC__) && !defined(__attribute__)
 # define __attribute__(x)
@@ -217,12 +230,14 @@ extern void pool_setdisttype(Pool *pool, int disttype);
 #endif
 extern int  pool_set_flag(Pool *pool, int flag, int value);
 extern int  pool_get_flag(Pool *pool, int flag);
-extern void pool_setvendorclasses(Pool *pool, const char **vendorclasses);
 
 extern void pool_debug(Pool *pool, int type, const char *format, ...) __attribute__((format(printf, 3, 4)));
 extern void pool_setdebugcallback(Pool *pool, void (*debugcallback)(struct _Pool *, void *data, int type, const char *str), void *debugcallbackdata);
 extern void pool_setdebugmask(Pool *pool, int mask);
 extern void pool_setloadcallback(Pool *pool, int (*cb)(struct _Pool *, struct _Repodata *, void *), void *loadcbdata);
+extern void pool_setnamespacecallback(Pool *pool, Id (*cb)(struct _Pool *, void *, Id, Id), void *nscbdata);
+extern void pool_flush_namespaceproviders(Pool *pool, Id ns, Id evr);
+
 extern void pool_set_custom_vendorcheck(Pool *pool, int (*vendorcheck)(struct _Pool *, Solvable *, Solvable *));
 
 
@@ -263,15 +278,18 @@ static inline const char *pool_solvid2str(Pool *pool, Id p)
 void pool_set_languages(Pool *pool, const char **languages, int nlanguages);
 Id pool_id2langid(Pool *pool, Id id, const char *lang, int create);
 
-int solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsmap, Map *noobsoletesmap);
-int solvable_trivial_installable_repo(Solvable *s, struct _Repo *installed, Map *noobsoletesmap);
-int solvable_trivial_installable_queue(Solvable *s, Queue *installed, Map *noobsoletesmap);
+int solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsmap, Map *multiversionmap);
+int solvable_trivial_installable_repo(Solvable *s, struct _Repo *installed, Map *multiversionmap);
+int solvable_trivial_installable_queue(Solvable *s, Queue *installed, Map *multiversionmap);
 int solvable_is_irrelevant_patch(Solvable *s, Map *installedmap);
 
 void pool_create_state_maps(Pool *pool, Queue *installed, Map *installedmap, Map *conflictsmap);
 
-int pool_match_nevr_rel(Pool *pool, Solvable *s, Id d);
+int pool_intersect_evrs(Pool *pool, int pflags, Id pevr, int flags, int evr);
 int pool_match_dep(Pool *pool, Id d1, Id d2);
+
+/* semi private, used in pool_match_nevr */
+int pool_match_nevr_rel(Pool *pool, Solvable *s, Id d);
 
 static inline int pool_match_nevr(Pool *pool, Solvable *s, Id d)
 {
@@ -290,17 +308,23 @@ extern void pool_addfileprovides(Pool *pool);
 extern void pool_addfileprovides_queue(Pool *pool, Queue *idq, Queue *idqinst);
 extern void pool_freewhatprovides(Pool *pool);
 extern Id pool_queuetowhatprovides(Pool *pool, Queue *q);
+extern Id pool_searchlazywhatprovidesq(Pool *pool, Id d);
 
 extern Id pool_addrelproviders(Pool *pool, Id d);
 
 static inline Id pool_whatprovides(Pool *pool, Id d)
 {
-  Id v;
   if (!ISRELDEP(d))
-    return pool->whatprovides[d];
-  v = GETRELID(d);
-  if (pool->whatprovides_rel[v])
-    return pool->whatprovides_rel[v];
+    {
+      if (pool->whatprovides[d])
+	return pool->whatprovides[d];
+    }
+  else
+    {
+      Id v = GETRELID(d);
+      if (pool->whatprovides_rel[v])
+	return pool->whatprovides_rel[v];
+    }
   return pool_addrelproviders(pool, d);
 }
 
@@ -309,6 +333,8 @@ static inline Id *pool_whatprovides_ptr(Pool *pool, Id d)
   Id off = pool_whatprovides(pool, d);
   return pool->whatprovidesdata + off;
 }
+
+void pool_whatmatchesdep(Pool *pool, Id keyname, Id dep, Queue *q, int marker);
 
 /* search the pool. the following filters are available:
  *   p     - search just this solvable
@@ -329,13 +355,14 @@ typedef struct _DUChanges {
 void pool_calc_duchanges(Pool *pool, Map *installedmap, DUChanges *mps, int nmps);
 int pool_calc_installsizechange(Pool *pool, Map *installedmap);
 void pool_trivial_installable(Pool *pool, Map *installedmap, Queue *pkgs, Queue *res);
-void pool_trivial_installable_noobsoletesmap(Pool *pool, Map *installedmap, Queue *pkgs, Queue *res, Map *noobsoletesmap);
+void pool_trivial_installable_multiversionmap(Pool *pool, Map *installedmap, Queue *pkgs, Queue *res, Map *multiversionmap);
 
 const char *pool_lookup_str(Pool *pool, Id entry, Id keyname);
 Id pool_lookup_id(Pool *pool, Id entry, Id keyname);
 unsigned long long pool_lookup_num(Pool *pool, Id entry, Id keyname, unsigned long long notfound);
 int pool_lookup_void(Pool *pool, Id entry, Id keyname);
 const unsigned char *pool_lookup_bin_checksum(Pool *pool, Id entry, Id keyname, Id *typep);
+int pool_lookup_idarray(Pool *pool, Id entry, Id keyname, Queue *q);
 const char *pool_lookup_checksum(Pool *pool, Id entry, Id keyname, Id *typep);
 const char *pool_lookup_deltalocation(Pool *pool, Id entry, unsigned int *medianrp);
 

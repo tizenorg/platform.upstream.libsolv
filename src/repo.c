@@ -92,11 +92,13 @@ repo_empty(Repo *repo, int reuseids)
 	if (s->repo != repo)
 	  break;
       pool_free_solvable_block(pool, i + 1, repo->end - (i + 1), reuseids);
+      repo->end = i + 1;
     }
   /* zero out (i.e. free) solvables belonging to this repo */
   for (i = repo->start, s = pool->solvables + i; i < repo->end; i++, s++)
     if (s->repo == repo)
       memset(s, 0, sizeof(*s));
+  repo->end = repo->start;
   repo->nsolvables = 0;
 
   /* free all data belonging to this repo */
@@ -146,7 +148,7 @@ repo_add_solvable(Repo *repo)
     repo->start = repo->end = p;
   /* warning: sidedata must be extended before adapting start/end */
   if (repo->rpmdbid)
-    repo->rpmdbid = (Id *)repo_sidedata_extend(repo, repo->rpmdbid, sizeof(Id), p, 1); 
+    repo->rpmdbid = (Id *)repo_sidedata_extend(repo, repo->rpmdbid, sizeof(Id), p, 1);
   if (p < repo->start)
     repo->start = p;
   if (p + 1 > repo->end)
@@ -160,7 +162,7 @@ Id
 repo_add_solvable_block(Repo *repo, int count)
 {
   Id p;
-  Solvable *s; 
+  Solvable *s;
   if (!count)
     return 0;
   p = pool_add_solvable_block(repo->pool, count);
@@ -216,6 +218,54 @@ repo_free_solvable_block(Repo *repo, Id start, int count, int reuseids)
 	    memset(data->incoreoffset + (dstart - data->start), 0, (dend - dstart) * sizeof(Id));
 	}
     }
+}
+
+/* specialized version of repo_add_solvable_block that inserts the new solvable
+ * block before the indicated repo, which gets relocated.
+ * used in repo_add_rpmdb
+ */
+Id
+repo_add_solvable_block_before(Repo *repo, int count, Repo *beforerepo)
+{
+  Pool *pool = repo->pool;
+  Id p;
+  Solvable *s;
+  Repodata *data;
+  int i;
+
+  if (!count || !beforerepo || beforerepo->end != pool->nsolvables || beforerepo->start == beforerepo->end)
+    return repo_add_solvable_block(repo, count);
+  p = beforerepo->start;
+  /* make sure all solvables belong to beforerepo */
+  for (i = p, s = pool->solvables + i; i < beforerepo->end; i++, s++)
+    if (s->repo && s->repo != beforerepo)
+      return repo_add_solvable_block(repo, count);
+  /* now move beforerepo to back */
+  pool_add_solvable_block(pool, count);	/* must return beforerepo->end! */
+  memmove(pool->solvables + p + count, pool->solvables + p, (beforerepo->end - p) * sizeof(Solvable));
+  memset(pool->solvables + p, 0, sizeof(Solvable) * count);
+  /* adapt repodata */
+  FOR_REPODATAS(beforerepo, i, data)
+    {
+      if (data->start < p)
+	continue;
+      data->start += count;
+      data->end += count;
+    }
+  beforerepo->start += count;
+  beforerepo->end += count;
+  /* we now have count free solvables at id p */
+  /* warning: sidedata must be extended before adapting start/end */
+  if (repo->rpmdbid)
+    repo->rpmdbid = (Id *)repo_sidedata_extend(repo, repo->rpmdbid, sizeof(Id), p, count);
+  if (p < repo->start)
+    repo->start = p;
+  if (p + count > repo->end)
+    repo->end = p + count;
+  repo->nsolvables += count;
+  for (s = pool->solvables + p; count--; s++)
+    s->repo = repo;
+  return p;
 }
 
 
@@ -312,7 +362,7 @@ repo_addid(Repo *repo, Offset olddeps, Id id)
 #define REPO_ADDID_DEP_HASHTHRES	64
 #define REPO_ADDID_DEP_HASHMIN		128
 
-/* 
+/*
  * Optimization for packages with an excessive amount of provides/requires:
  * if the number of deps exceed a threshold, we build a hash of the already
  * seen ids.
@@ -542,6 +592,20 @@ repo_addid_dep(Repo *repo, Offset olddeps, Id id, Id marker)
   return repo_addid(repo, olddeps, id);
 }
 
+/* return standard marker for the keyname dependency.
+ * 1: return positive marker, -1: return negative marker
+ */
+Id
+solv_depmarker(Id keyname, Id marker)
+{
+  if (marker != 1 && marker != -1)
+    return marker;
+  if (keyname == SOLVABLE_PROVIDES)
+    return marker < 0 ? -SOLVABLE_FILEMARKER : SOLVABLE_FILEMARKER;
+  if (keyname == SOLVABLE_REQUIRES)
+    return marker < 0 ? -SOLVABLE_PREREQMARKER : SOLVABLE_PREREQMARKER;
+  return 0;
+}
 
 /*
  * reserve Ids
@@ -550,7 +614,6 @@ repo_addid_dep(Repo *repo, Offset olddeps, Id id, Id marker)
  *
  * reserved ids will always begin at offset idarraysize
  */
-
 Offset
 repo_reserve_ids(Repo *repo, Offset olddeps, int num)
 {
@@ -844,12 +907,13 @@ repo_matchvalue(void *cbdata, Solvable *s, Repodata *data, Repokey *key, KeyValu
 
   if (md->matcher.match)
     {
+      const char *str;
       if (key->name == SOLVABLE_FILELIST && key->type == REPOKEY_TYPE_DIRSTRARRAY && (md->matcher.flags & SEARCH_FILES) != 0)
 	if (!datamatcher_checkbasename(&md->matcher, kv->str))
 	  return 0;
-      if (!repodata_stringify(md->pool, data, key, kv, md->flags))
+      if (!(str = repodata_stringify(md->pool, data, key, kv, md->flags)))
 	return 0;
-      if (!datamatcher_match(&md->matcher, kv->str))
+      if (!datamatcher_match(&md->matcher, str))
 	return 0;
     }
   md->stop = md->callback(md->callback_data, s, data, key, kv);
@@ -1092,6 +1156,8 @@ repo_lookup_str(Repo *repo, Id entry, Id keyname)
 	  return pool_id2str(pool, pool->solvables[entry].vendor);
 	}
     }
+  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    return repodata_lookup_str(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname);
   FOR_REPODATAS(repo, i, data)
     {
       if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
@@ -1111,6 +1177,7 @@ repo_lookup_str(Repo *repo, Id entry, Id keyname)
 unsigned long long
 repo_lookup_num(Repo *repo, Id entry, Id keyname, unsigned long long notfound)
 {
+  Pool *pool = repo->pool;
   Repodata *data;
   int i;
   unsigned long long value;
@@ -1124,6 +1191,8 @@ repo_lookup_num(Repo *repo, Id entry, Id keyname, unsigned long long notfound)
 	  return notfound;
 	}
     }
+  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    return repodata_lookup_num(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname, &value) ? value : notfound;
   FOR_REPODATAS(repo, i, data)
     {
       if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
@@ -1141,6 +1210,7 @@ repo_lookup_num(Repo *repo, Id entry, Id keyname, unsigned long long notfound)
 Id
 repo_lookup_id(Repo *repo, Id entry, Id keyname)
 {
+  Pool *pool = repo->pool;
   Repodata *data;
   int i;
   Id id;
@@ -1158,6 +1228,12 @@ repo_lookup_id(Repo *repo, Id entry, Id keyname)
 	case SOLVABLE_VENDOR:
 	  return repo->pool->solvables[entry].vendor;
 	}
+    }
+  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    {
+      Repodata *data = pool->pos.repo->repodata + pool->pos.repodataid;
+      Id id = repodata_lookup_id(data, entry, keyname);
+      return data->localpool ? repodata_globalize_id(data, id, 1) : id;
     }
   FOR_REPODATAS(repo, i, data)
     {
@@ -1189,6 +1265,7 @@ lookup_idarray_solvable(Repo *repo, Offset off, Queue *q)
 int
 repo_lookup_idarray(Repo *repo, Id entry, Id keyname, Queue *q)
 {
+  Pool *pool = repo->pool;
   Repodata *data;
   int i;
   if (entry >= 0)
@@ -1212,6 +1289,19 @@ repo_lookup_idarray(Repo *repo, Id entry, Id keyname, Queue *q)
 	case SOLVABLE_ENHANCES:
 	  return lookup_idarray_solvable(repo, repo->pool->solvables[entry].enhances, q);
         }
+    }
+  else if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    {
+      Repodata *data = pool->pos.repo->repodata + pool->pos.repodataid;
+      if (repodata_lookup_idarray(data, entry, keyname, q))
+	{
+	  if (data->localpool)
+	    {
+	      for (i = 0; i < q->count; i++)
+		q->elements[i] = repodata_globalize_id(data, q->elements[i], 1);
+	    }
+	  return 1;
+	}
     }
   FOR_REPODATAS(repo, i, data)
     {
@@ -1239,7 +1329,11 @@ int
 repo_lookup_deparray(Repo *repo, Id entry, Id keyname, Queue *q, Id marker)
 {
   int r = repo_lookup_idarray(repo, entry, keyname, q);
-  if (r && marker && q->count)
+  if (!r)
+    return 0;
+  if (marker == -1 || marker == 1)
+    marker = solv_depmarker(keyname, marker);
+  if (marker && q->count)
     {
       int i;
       if (marker < 0)
@@ -1269,10 +1363,13 @@ repo_lookup_deparray(Repo *repo, Id entry, Id keyname, Queue *q, Id marker)
 const unsigned char *
 repo_lookup_bin_checksum(Repo *repo, Id entry, Id keyname, Id *typep)
 {
+  Pool *pool = repo->pool;
   Repodata *data;
   int i;
   const unsigned char *chk;
 
+  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    return repodata_lookup_bin_checksum(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname, typep);
   FOR_REPODATAS(repo, i, data)
     {
       if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
@@ -1299,10 +1396,13 @@ repo_lookup_checksum(Repo *repo, Id entry, Id keyname, Id *typep)
 int
 repo_lookup_void(Repo *repo, Id entry, Id keyname)
 {
+  Pool *pool = repo->pool;
   Repodata *data;
   int i;
   Id type;
 
+  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    return repodata_lookup_void(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname);
   FOR_REPODATAS(repo, i, data)
     {
       if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
@@ -1319,10 +1419,13 @@ repo_lookup_void(Repo *repo, Id entry, Id keyname)
 Id
 repo_lookup_type(Repo *repo, Id entry, Id keyname)
 {
+  Pool *pool = repo->pool;
   Repodata *data;
   int i;
   Id type;
 
+  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    return repodata_lookup_type(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname);
   FOR_REPODATAS(repo, i, data)
     {
       if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
@@ -1333,6 +1436,30 @@ repo_lookup_type(Repo *repo, Id entry, Id keyname)
       if (type)
 	return type == REPOKEY_TYPE_DELETED ? 0 : type;
     }
+  return 0;
+}
+
+const void *
+repo_lookup_binary(Repo *repo, Id entry, Id keyname, int *lenp)
+{
+  Pool *pool = repo->pool;
+  Repodata *data;
+  int i;
+  const void *bin;
+
+  if (entry == SOLVID_POS && pool->pos.repo == repo && pool->pos.repodataid)
+    return repodata_lookup_binary(pool->pos.repo->repodata + pool->pos.repodataid, entry, keyname, lenp);
+  FOR_REPODATAS(repo, i, data)
+    {
+      if (entry != SOLVID_META && (entry < data->start || entry >= data->end))
+	continue;
+      if (!repodata_precheck_keyname(data, keyname))
+	continue;
+      bin = repodata_lookup_binary(data, entry, keyname, lenp);
+      if (bin)
+	return bin;
+    }
+  *lenp = 0;
   return 0;
 }
 
@@ -1364,16 +1491,16 @@ repo_add_repodata(Repo *repo, int flags)
 	  return repo->repodata + i;
     }
   if (!repo->nrepodata)
-    {    
+    {
       repo->nrepodata = 2;      /* start with id 1 */
       repo->repodata = solv_calloc(repo->nrepodata, sizeof(*data));
-    }    
-  else 
-    {    
+    }
+  else
+    {
       repo->nrepodata++;
       repo->repodata = solv_realloc2(repo->repodata, repo->nrepodata, sizeof(*data));
-    }    
-  data = repo->repodata + repo->nrepodata - 1; 
+    }
+  data = repo->repodata + repo->nrepodata - 1;
   repodata_initdata(data, repo, (flags & REPO_LOCALPOOL) ? 1 : 0);
   return data;
 }
@@ -1491,6 +1618,8 @@ void
 repo_add_deparray(Repo *repo, Id p, Id keyname, Id dep, Id marker)
 {
   Repodata *data;
+  if (marker == -1 || marker == 1)
+    marker = solv_depmarker(keyname, marker);
   if (p >= 0)
     {
       Solvable *s = repo->pool->solvables + p;
@@ -1546,6 +1675,8 @@ void
 repo_set_deparray(Repo *repo, Id p, Id keyname, Queue *q, Id marker)
 {
   Repodata *data;
+  if (marker == -1 || marker == 1)
+    marker = solv_depmarker(keyname, marker);
   if (marker)
     {
       /* complex case, splice old and new arrays */
@@ -1566,9 +1697,7 @@ repo_set_deparray(Repo *repo, Id p, Id keyname, Queue *q, Id marker)
 	{
 	  if (q2.count)
 	    queue_insert(&q2, 0, -marker);
-	  queue_insertn(&q2, 0, q->count);
-	  for (i = 0; i < q->count; i++)
-	   q2.elements[i] = q->elements[i];
+	  queue_insertn(&q2, 0, q->count, q->elements);
 	}
       repo_set_deparray(repo, p, keyname, &q2, 0);
       queue_free(&q2);
@@ -1692,6 +1821,3 @@ repo_disable_paging(Repo *repo)
     repodata_disable_paging(data);
 }
 
-/*
-vim:cinoptions={.5s,g0,p5,t0,(0,^-0.5s,n-0.5s:tw=78:cindent:sw=4:
-*/

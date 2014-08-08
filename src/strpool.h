@@ -10,6 +10,10 @@
 #include "pooltypes.h"
 #include "hash.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define STRID_NULL  0
 #define STRID_EMPTY 1
 
@@ -21,7 +25,7 @@ struct _Stringpool
   Offset sstrings;            /* size of used stringspace */
 
   Hashtable stringhashtbl;    /* hash table: (string ->) Hash -> Id */
-  Hashmask stringhashmask;    /* modulo value for hash table (size of table - 1) */
+  Hashval stringhashmask;     /* modulo value for hash table (size of table - 1) */
 };
 
 void stringpool_init(Stringpool *ss, const char *strs[]);
@@ -41,5 +45,9 @@ stringpool_id2str(Stringpool *ss, Id id)
 {
   return ss->stringspace + ss->strings[id];
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

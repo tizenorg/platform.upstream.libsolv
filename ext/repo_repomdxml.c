@@ -255,8 +255,8 @@ startElement(void *userData, const char *name, const char **atts)
 	      }
 	    free(fvalue);
           }
-          break;
-        }
+        break;
+      }
     case STATE_DISTRO:
       {
         /* this is extra metadata about the product this repository
@@ -382,7 +382,7 @@ endElement(void *userData, const char *name)
       break;
     case STATE_REVISION:
       if (*pd->content)
-	repodata_add_poolstr_array(pd->data, SOLVID_META, REPOSITORY_REVISION, pd->content);
+	repodata_set_str(pd->data, SOLVID_META, REPOSITORY_REVISION, pd->content);
       break;
     case STATE_DISTRO:
       /* distro tag is used in repomd.xml to say the product this repo is

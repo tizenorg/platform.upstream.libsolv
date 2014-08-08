@@ -17,22 +17,42 @@
 #include "util.h"
 
 
+/* Evil hack for Haiku: fopencookie() is implemented internally, but not
+   exported by a header. */
+#ifdef __HAIKU__
+
+typedef struct {
+	ssize_t (*read)(void*, char*, size_t);
+	ssize_t (*write)(void*, const char*, size_t);
+	int (*seek)(off_t*, int);
+	int (*close)(void*);
+} cookie_io_functions_t;
+
+
+FILE *fopencookie(void*, const char*, cookie_io_functions_t);
+
+#endif /* __HAIKU__ */
+
+
 static FILE *cookieopen(void *cookie, const char *mode,
-	ssize_t (*cread)(void *, char *, size_t), 
-	ssize_t (*cwrite)(void *, const char *, size_t), 
+	ssize_t (*cread)(void *, char *, size_t),
+	ssize_t (*cwrite)(void *, const char *, size_t),
 	int (*cclose)(void *))
 {
+#ifdef HAVE_FUNOPEN
   if (!cookie)
     return 0;
-#ifdef HAVE_FUNOPEN
-  return funopen(cookie, 
-      (int (*)(void *, char *, int))(*mode == 'r' ? cread: NULL),/* readfn */
-      (int (*)(void *, const char *, int))(*mode == 'w' ? cwrite : NULL), /* writefn */
-      (fpos_t (*)(void *, fpos_t, int))NULL, /* seekfn */
+  return funopen(cookie,
+      (int (*)(void *, char *, int))(*mode == 'r' ? cread : NULL),		/* readfn */
+      (int (*)(void *, const char *, int))(*mode == 'w' ? cwrite : NULL),	/* writefn */
+      (fpos_t (*)(void *, fpos_t, int))NULL,					/* seekfn */
       cclose
       );
 #elif defined(HAVE_FOPENCOOKIE)
   cookie_io_functions_t cio;
+
+  if (!cookie)
+    return 0;
   memset(&cio, 0, sizeof(cio));
   if (*mode == 'r')
     cio.read = cread;

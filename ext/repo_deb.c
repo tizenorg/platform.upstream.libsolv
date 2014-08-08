@@ -122,7 +122,14 @@ parseonedep(Pool *pool, char *p)
       while (*p == ' ' || *p == '\t' || *p == '\n')
 	p++;
     }
-  name = pool_strn2id(pool, n, ne - n, 1);
+  if (ne - n > 4 && ne[-4] == ':' && !strncmp(ne - 4, ":any", 4))
+    {
+      /* multiarch annotation */
+      name = pool_strn2id(pool, n, ne - n - 4, 1);
+      name = pool_rel2id(pool, name, ARCH_ANY, REL_MULTIARCH, 1);
+    }
+  else
+    name = pool_strn2id(pool, n, ne - n, 1);
   if (e)
     {
       evr = pool_strn2id(pool, e, ee - e, 1);
@@ -517,9 +524,9 @@ repo_add_deb(Repo *repo, const char *deb, int flags)
   gotpkgid = 0;
   if (flags & DEBS_ADD_WITH_PKGID)
     {
-      void *handle = solv_chksum_create(REPOKEY_TYPE_MD5);
-      solv_chksum_add(handle, ctgz, clen);
-      solv_chksum_free(handle, pkgid);
+      Chksum *chk = solv_chksum_create(REPOKEY_TYPE_MD5);
+      solv_chksum_add(chk, ctgz, clen);
+      solv_chksum_free(chk, pkgid);
       gotpkgid = 1;
     }
   if (ctgz[0] != 0x1f || ctgz[1] != 0x8b)

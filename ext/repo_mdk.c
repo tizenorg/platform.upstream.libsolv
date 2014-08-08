@@ -95,7 +95,9 @@ repo_add_mdk(Repo *repo, FILE *fp, int flags)
   while (fgets(buf + bufl, bufa - bufl, fp) > 0)
     {
       bufl += strlen(buf + bufl);
-      if (bufl && buf[bufl - 1] != '\n')
+      if (!bufl)
+	continue;
+      if (buf[bufl - 1] != '\n')
 	{
 	  if (bufa - bufl < 256)
 	    {
@@ -104,7 +106,7 @@ repo_add_mdk(Repo *repo, FILE *fp, int flags)
 	    }
 	  continue;
 	}
-      buf[--bufl] = 0;
+      buf[bufl - 1] = 0;
       bufl = 0;
       if (buf[0] != '@')
 	{
@@ -287,7 +289,7 @@ struct parsedata {
   enum state sbtab[NUMSTATES];
   Solvable *solvable;
   Hashtable joinhash;
-  Hashmask joinhashmask;
+  Hashval joinhashmask;
 };
 
 static inline const char *
@@ -302,9 +304,9 @@ find_attr(const char *txt, const char **atts)
 }
 
 static Hashtable
-joinhash_init(Repo *repo, Hashmask *hmp)
+joinhash_init(Repo *repo, Hashval *hmp)
 {
-  Hashmask hm = mkmask(repo->nsolvables);
+  Hashval hm = mkmask(repo->nsolvables);
   Hashtable ht = solv_calloc(hm + 1, sizeof(*ht));
   Hashval h, hh;
   Solvable *s;
@@ -323,7 +325,7 @@ joinhash_init(Repo *repo, Hashmask *hmp)
 }
 
 static Solvable *
-joinhash_lookup(Repo *repo, Hashtable ht, Hashmask hm, const char *fn, const char *distepoch)
+joinhash_lookup(Repo *repo, Hashtable ht, Hashval hm, const char *fn, const char *distepoch)
 {
   Hashval h, hh;
   const char *p, *vrstart, *vrend;

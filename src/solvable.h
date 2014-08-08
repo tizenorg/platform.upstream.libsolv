@@ -7,7 +7,7 @@
 
 /*
  * solvable.h
- * 
+ *
  * A solvable represents an object with name-epoch:version-release.arch
  * and dependencies
  */
@@ -17,6 +17,10 @@
 
 #include "pooltypes.h"
 #include "queue.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct _Repo;
 
@@ -73,6 +77,11 @@ void solvable_set_deparray(Solvable *s, Id keyname, Queue *q, Id marker);
 void solvable_unset(Solvable *s, Id keyname);
 
 int solvable_identical(Solvable *s1, Solvable *s2);
-Id solvable_selfprovidedep(Solvable *s); 
+Id solvable_selfprovidedep(Solvable *s);
+int solvable_matchesdep(Solvable *s, Id keyname, Id dep, int marker);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBSOLV_SOLVABLE_H */

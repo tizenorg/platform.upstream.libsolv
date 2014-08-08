@@ -7,7 +7,7 @@
 
 /*
  * repo.h
- * 
+ *
  */
 
 #ifndef LIBSOLV_REPO_H
@@ -19,7 +19,9 @@
 #include "dataiterator.h"
 #include "hash.h"
 
-
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef struct _Repo {
   const char *name;		/* name pointer */
@@ -48,7 +50,7 @@ typedef struct _Repo {
   Offset lastoff;		/* start of last array in idarraydata */
 
   Hashtable lastidhash;		/* hash to speed up repo_addid_dep */
-  Hashmask lastidhash_mask;
+  Hashval lastidhash_mask;
   int lastidhash_idarraysize;
   int lastmarker;
   Offset lastmarkerpos;
@@ -65,6 +67,7 @@ extern void repo_free_solvable(Repo *repo, Id p, int reuseids);
 extern void repo_free_solvable_block(Repo *repo, Id start, int count, int reuseids);
 extern void *repo_sidedata_create(Repo *repo, size_t size);
 extern void *repo_sidedata_extend(Repo *repo, void *b, size_t size, Id p, int count);
+extern Id repo_add_solvable_block_before(Repo *repo, int count, Repo *beforerepo);
 
 extern Offset repo_addid(Repo *repo, Offset olddeps, Id id);
 extern Offset repo_addid_dep(Repo *repo, Offset olddeps, Id id, Id marker);
@@ -89,7 +92,7 @@ static inline int pool_disabled_solvable(const Pool *pool, Solvable *s)
   if (s->repo && s->repo->disabled)
     return 1;
   if (pool->considered)
-    { 
+    {
       Id id = s - pool->solvables;
       if (!MAPTST(pool->considered, id))
 	return 1;
@@ -106,7 +109,7 @@ static inline int pool_installable(const Pool *pool, Solvable *s)
   if (pool->id2arch && (s->arch > pool->lastarch || !pool->id2arch[s->arch]))
     return 0;
   if (pool->considered)
-    { 
+    {
       Id id = s - pool->solvables;
       if (!MAPTST(pool->considered, id))
 	return 0;
@@ -146,6 +149,8 @@ int repo_lookup_deparray(Repo *repo, Id entry, Id keyname, Queue *q, Id marker);
 int repo_lookup_void(Repo *repo, Id entry, Id keyname);
 const char *repo_lookup_checksum(Repo *repo, Id entry, Id keyname, Id *typep);
 const unsigned char *repo_lookup_bin_checksum(Repo *repo, Id entry, Id keyname, Id *typep);
+const void *repo_lookup_binary(Repo *repo, Id entry, Id keyname, int *lenp);
+Id solv_depmarker(Id keyname, Id marker);
 
 void repo_set_id(Repo *repo, Id p, Id keyname, Id id);
 void repo_set_num(Repo *repo, Id p, Id keyname, unsigned long long num);
@@ -157,7 +162,7 @@ void repo_add_deparray(Repo *repo, Id p, Id keyname, Id dep, Id marker);
 void repo_set_idarray(Repo *repo, Id p, Id keyname, Queue *q);
 void repo_set_deparray(Repo *repo, Id p, Id keyname, Queue *q, Id marker);
 void repo_unset(Repo *repo, Id p, Id keyname);
- 
+
 void repo_internalize(Repo *repo);
 void repo_disable_paging(Repo *repo);
 
@@ -174,6 +179,10 @@ void repo_disable_paging(Repo *repo);
 #else
 #define FOR_REPODATAS(repo, rdid, data)	\
 	for (rdid = 1; rdid < repo->nrepodata && (data = repo_id2repodata(repo, rdid)); rdid++)
+#endif
+
+#ifdef __cplusplus
+}
 #endif
 
 #endif /* LIBSOLV_REPO_H */

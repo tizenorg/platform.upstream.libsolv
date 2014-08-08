@@ -11,6 +11,20 @@ IF (ENABLE_RPMDB)
         pool_fileconflicts.h repo_rpmdb.h)
 ENDIF (ENABLE_RPMDB)
 
+IF (ENABLE_PUBKEY)
+    SET (libsolvext_SRCS ${libsolvext_SRCS}
+	repo_pubkey.c)
+    SET (libsolvext_HEADERS ${libsolvext_HEADERS}
+	repo_pubkey.h)
+ENDIF (ENABLE_PUBKEY)
+
+IF (ENABLE_PGPVRFY)
+    SET (libsolvext_SRCS ${libsolvext_SRCS}
+	solv_pgpvrfy.c)
+    SET (libsolvext_HEADERS ${libsolvext_HEADERS}
+	solv_pgpvrfy.h)
+ENDIF (ENABLE_PGPVRFY)
+
 IF (ENABLE_RPMMD)
     SET (libsolvext_SRCS ${libsolvext_SRCS}
 	repo_repomdxml.c repo_rpmmd.c
@@ -29,6 +43,13 @@ IF (ENABLE_SUSEREPO)
 	repo_susetags.h repo_zyppdb.h)
 ENDIF (ENABLE_SUSEREPO)
 
+IF (SUSE)
+    SET (libsolvext_SRCS ${libsolvext_SRCS}
+	repo_autopattern.c)
+    SET (libsolvext_HEADERS ${libsolvext_HEADERS}
+	repo_autopattern.h)
+ENDIF (SUSE)
+
 IF (ENABLE_COMPS)
     SET (libsolvext_SRCS ${libsolvext_SRCS}
 	repo_comps.c)
@@ -42,7 +63,7 @@ IF (ENABLE_DEBIAN)
     SET (libsolvext_HEADERS ${libsolvext_HEADERS}
 	repo_deb.h)
 ENDIF (ENABLE_DEBIAN)
-	
+
 IF (ENABLE_HELIXREPO)
     SET (libsolvext_SRCS ${libsolvext_SRCS}
 	repo_helix.c)
@@ -71,19 +92,22 @@ IF (ENABLE_CUDFREPO)
 	repo_cudf.h)
 ENDIF (ENABLE_CUDFREPO)
 
-SET (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
-SET (CMAKE_SHARED_LINKER_FLAGS "${LINK_FLAGS} -Wl,--version-script=${CMAKE_SOURCE_DIR}/ext/libsolvext.ver")
+IF (ENABLE_HAIKU)
+    SET (libsolvext_SRCS ${libsolvext_SRCS}
+	repo_haiku.cpp)
+    SET (libsolvext_HEADERS ${libsolvext_HEADERS}
+	repo_haiku.h)
+ENDIF (ENABLE_HAIKU)
 
-SET (SYSTEM_LIBRARIES ${EXPAT_LIBRARY} ${ZLIB_LIBRARY})
-IF (ENABLE_LZMA_COMPRESSION)
-SET (SYSTEM_LIBRARIES ${SYSTEM_LIBRARIES} ${LZMA_LIBRARY})
-ENDIF (ENABLE_LZMA_COMPRESSION)
-IF (ENABLE_BZIP2_COMPRESSION)
-SET (SYSTEM_LIBRARIES ${SYSTEM_LIBRARIES} ${BZIP2_LIBRARIES})
-ENDIF (ENABLE_BZIP2_COMPRESSION)
-IF (ENABLE_RPMDB)
-SET (SYSTEM_LIBRARIES ${RPMDB_LIBRARY} ${SYSTEM_LIBRARIES})
-ENDIF (ENABLE_RPMDB)
+IF (ENABLE_APPDATA)
+    SET (libsolvext_SRCS ${libsolvext_SRCS}
+	repo_appdata.c)
+    SET (libsolvext_HEADERS ${libsolvext_HEADERS}
+	repo_appdata.h)
+ENDIF (ENABLE_APPDATA)
+
+SET (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
+SET (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${LINK_FLAGS} -Wl,--version-script=${CMAKE_SOURCE_DIR}/ext/libsolvext.ver")
 
 IF (DISABLE_SHARED)
 ADD_LIBRARY (libsolvext STATIC ${libsolvext_SRCS})

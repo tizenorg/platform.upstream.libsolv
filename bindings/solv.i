@@ -4,20 +4,58 @@
 # on the generated c code
 #
 
-#
-##if defined(SWIGRUBY)
-#  %rename("to_s") string();
-##endif
-##if defined(SWIGPYTHON)
-#  %rename("__str__") string();
-##endif
-#
-
 %module solv
 
 #ifdef SWIGRUBY
 %markfunc Pool "mark_Pool";
 #endif
+
+#
+# binaryblob handling
+#
+
+%{
+typedef struct {
+  const void *data;
+  size_t len;
+} BinaryBlob;
+%}
+
+%typemap(in,noblock=1,fragment="SWIG_AsCharPtrAndSize") (const unsigned char *str, size_t len) (int res, char *buf = 0, size_t size = 0, int alloc = 0) {
+  res = SWIG_AsCharPtrAndSize($input, &buf, &size, &alloc);
+  if (!SWIG_IsOK(res)) {
+#if defined(SWIGPYTHON)
+    const void *pybuf = 0;
+    Py_ssize_t pysize = 0;
+    res = PyObject_AsReadBuffer($input, &pybuf, &pysize);
+    if (res < 0) {
+      %argument_fail(res, "BinaryBlob", $symname, $argnum);
+    } else {
+      buf = (void *)pybuf;
+      size = pysize;
+    }
+#else
+    %argument_fail(res, "const char *", $symname, $argnum);
+#endif
+  }
+  $1 = (unsigned char *)buf;
+  $2 = size;
+}
+
+%typemap(freearg,noblock=1,match="in") (const unsigned char *str, int len) {
+  if (alloc$argnum == SWIG_NEWOBJ) %delete_array(buf$argnum);
+}
+
+%typemap(out,noblock=1,fragment="SWIG_FromCharPtrAndSize") BinaryBlob {
+#if defined(SWIGPYTHON) && defined(PYTHON3)
+  $result = $1.data ? Py_BuildValue("y#", $1.data, $1.len) : SWIG_Py_Void();
+#else
+  $result = SWIG_FromCharPtrAndSize($1.data, $1.len);
+#if defined(SWIGPERL)
+  argvi++;
+#endif
+#endif
+}
 
 #if defined(SWIGPYTHON)
 %typemap(in) Queue {
@@ -73,7 +111,6 @@
 %enddef
 
 #endif
-
 
 #if defined(SWIGPERL)
 %typemap(in) Queue {
@@ -199,15 +236,15 @@
 # work around a swig bug
 %{
 #undef SWIG_CALLXS
-#ifdef PERL_OBJECT 
-#  define SWIG_CALLXS(_name) TOPMARK=MARK-PL_stack_base;_name(cv,pPerl) 
-#else 
-#  ifndef MULTIPLICITY 
-#    define SWIG_CALLXS(_name) TOPMARK=MARK-PL_stack_base;_name(cv) 
-#  else 
-#    define SWIG_CALLXS(_name) TOPMARK=MARK-PL_stack_base;_name(PERL_GET_THX, cv) 
-#  endif 
-#endif 
+#ifdef PERL_OBJECT
+#  define SWIG_CALLXS(_name) TOPMARK=MARK-PL_stack_base;_name(cv,pPerl)
+#else
+#  ifndef MULTIPLICITY
+#    define SWIG_CALLXS(_name) TOPMARK=MARK-PL_stack_base;_name(cv)
+#  else
+#    define SWIG_CALLXS(_name) TOPMARK=MARK-PL_stack_base;_name(PERL_GET_THX, cv)
+#  endif
+#endif
 %}
 
 
@@ -323,7 +360,6 @@ typedef VALUE AppObjectPtr;
 #endif
 
 
-%include "cdata.i"
 #ifdef SWIGPYTHON
 %include "file.i"
 #else
@@ -346,7 +382,7 @@ SWIG_AsValSolvFpPtr(void *obj, FILE **val) {
   if (!desc) desc = SWIG_TypeQuery("SolvFp *");
   if ((SWIG_ConvertPtr(obj, &vptr, desc, 0)) == SWIG_OK) {
     if (val)
-      *val = ((SolvFp *)vptr)->fp;
+      *val = vptr ? ((SolvFp *)vptr)->fp : 0;
     return SWIG_OK;
   }
 #ifdef SWIGPYTHON
@@ -369,7 +405,7 @@ SWIG_AsValDepId(VALUE obj, int *val) {
 SWIG_AsValDepId(void *obj, int *val) {
 #endif
   static swig_type_info* desc = 0;
-  void *vptr = 0; 
+  void *vptr = 0;
   int ecode;
   if (!desc) desc = SWIG_TypeQuery("Dep *");
   ecode = SWIG_AsVal_int(obj, val);
@@ -377,7 +413,7 @@ SWIG_AsValDepId(void *obj, int *val) {
     return ecode;
   if ((SWIG_ConvertPtr(obj, &vptr, desc, 0)) == SWIG_OK) {
     if (val)
-      *val = ((Dep *)vptr)->id;
+      *val = vptr ? ((Dep *)vptr)->id : 0;
     return SWIG_OK;
   }
   return SWIG_TypeError;
@@ -385,9 +421,27 @@ SWIG_AsValDepId(void *obj, int *val) {
 
 }
 
-
+%typemap(out) disown_helper {
+#ifdef SWIGRUBY
+  SWIG_ConvertPtr(self, &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
+#endif
+#ifdef SWIGPYTHON
+  SWIG_ConvertPtr(obj0, &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
+#endif
+#ifdef SWIGPERL
+  SWIG_ConvertPtr(ST(0), &argp1,SWIGTYPE_p_Pool, SWIG_POINTER_DISOWN |  0 );
+#endif
+  $result = SWIG_From_int((int)(0));
+}
 
 %include "typemaps.i"
+
+%typemap(in,numinputs=0,noblock=1) XRule **OUTPUT ($*1_ltype temp) {
+  $1 = &temp;
+}
+%typemap(argout,noblock=1) XRule **OUTPUT {
+  %append_output(SWIG_NewPointerObj((void*)(*$1), SWIGTYPE_p_XRule, SWIG_POINTER_OWN | %newpointer_flags));
+}
 
 %typemaps_asval(%checkcode(POINTER), SWIG_AsValSolvFpPtr, "SWIG_AsValSolvFpPtr", FILE*);
 %typemaps_asval(%checkcode(INT32), SWIG_AsValDepId, "SWIG_AsValDepId", DepId);
@@ -408,6 +462,7 @@ typedef int bool;
 
 #include "pool.h"
 #include "poolarch.h"
+#include "evr.h"
 #include "solver.h"
 #include "policy.h"
 #include "solverdebug.h"
@@ -418,6 +473,9 @@ typedef int bool;
 #include "repo_write.h"
 #ifdef ENABLE_RPMDB
 #include "repo_rpmdb.h"
+#endif
+#ifdef ENABLE_PUBKEY
+#include "repo_pubkey.h"
 #endif
 #ifdef ENABLE_DEBIAN
 #include "repo_deb.h"
@@ -439,6 +497,9 @@ typedef int bool;
 #ifdef ENABLE_ARCHREPO
 #include "repo_arch.h"
 #endif
+#ifdef SUSE
+#include "repo_autopattern.h"
+#endif
 #include "solv_xfopen.h"
 
 /* for old ruby versions */
@@ -454,8 +515,8 @@ typedef int bool;
 #define SOLVER_SOLUTION_REPLACE_DOWNGRADE       -102
 #define SOLVER_SOLUTION_REPLACE_ARCHCHANGE      -103
 #define SOLVER_SOLUTION_REPLACE_VENDORCHANGE    -104
+#define SOLVER_SOLUTION_REPLACE_NAMECHANGE      -105
 
-typedef struct chksum Chksum;
 typedef void *AppObjectPtr;
 typedef Id DepId;
 
@@ -528,7 +589,7 @@ typedef struct {
   Id type;
   Id source;
   Id target;
-  Id dep;
+  Id dep_id;
 } Ruleinfo;
 
 typedef struct {
@@ -551,6 +612,8 @@ typedef struct {
 } SolvFp;
 
 typedef Dataiterator Datamatch;
+
+typedef int disown_helper;
 
 %}
 
@@ -595,7 +658,7 @@ typedef struct {
 typedef struct {
   Solver* const solv;
   Id const type;
-  Id const dep;
+  Id const dep_id;
 } Ruleinfo;
 
 typedef struct {
@@ -656,6 +719,15 @@ typedef struct {
 
 typedef struct {
 } Chksum;
+
+#ifdef ENABLE_PUBKEY
+typedef struct {
+  Id const htype;
+  unsigned int const created;
+  unsigned int const expires;
+  const char * const keyid;
+} Solvsig;
+#endif
 
 %rename(xfopen) solvfp_xfopen;
 %rename(xfopen_fd) solvfp_xfopen_fd;
@@ -767,7 +839,7 @@ typedef struct {
   static const Id SOLVER_ERASE = SOLVER_ERASE;
   static const Id SOLVER_UPDATE = SOLVER_UPDATE;
   static const Id SOLVER_WEAKENDEPS = SOLVER_WEAKENDEPS;
-  static const Id SOLVER_NOOBSOLETES = SOLVER_NOOBSOLETES;
+  static const Id SOLVER_MULTIVERSION = SOLVER_MULTIVERSION;
   static const Id SOLVER_LOCK = SOLVER_LOCK;
   static const Id SOLVER_DISTUPGRADE = SOLVER_DISTUPGRADE;
   static const Id SOLVER_VERIFY = SOLVER_VERIFY;
@@ -779,6 +851,7 @@ typedef struct {
   static const Id SOLVER_CLEANDEPS = SOLVER_CLEANDEPS;
   static const Id SOLVER_FORCEBEST = SOLVER_FORCEBEST;
   static const Id SOLVER_TARGETED = SOLVER_TARGETED;
+  static const Id SOLVER_NOTBYUSER = SOLVER_NOTBYUSER;
   static const Id SOLVER_SETEV = SOLVER_SETEV;
   static const Id SOLVER_SETEVR = SOLVER_SETEVR;
   static const Id SOLVER_SETARCH = SOLVER_SETARCH;
@@ -857,9 +930,6 @@ typedef struct {
   int flags() {
     return $self->flags;
   }
-  void make(const char *name, int flags) {
-    $self->flags = selection_make($self->pool, &$self->q, name, flags);
-  }
 #ifdef SWIGRUBY
   %rename("isempty?") isempty;
 #endif
@@ -916,7 +986,7 @@ typedef struct {
 
 %extend Chksum {
   Chksum(Id type) {
-    return (Chksum *)solv_chksum_create(type);
+    return solv_chksum_create(type);
   }
   Chksum(Id type, const char *hex) {
     unsigned char buf[64];
@@ -925,19 +995,19 @@ typedef struct {
       return 0;
     if (solv_hex2bin(&hex, buf, sizeof(buf)) != l || hex[0])
       return 0;
-    return (Chksum *)solv_chksum_create_from_bin(type, buf);
+    return solv_chksum_create_from_bin(type, buf);
   }
   ~Chksum() {
     solv_chksum_free($self, 0);
   }
   Id const type;
   %{
-  SWIGINTERN Id Chksum_type_get(Chksum *chksum) {
-    return solv_chksum_get_type(chksum);
+  SWIGINTERN Id Chksum_type_get(Chksum *chk) {
+    return solv_chksum_get_type(chk);
   }
   %}
-  void add(const char *str) {
-    solv_chksum_add($self, str, strlen((char *)str));
+  void add(const unsigned char *str, size_t len) {
+    solv_chksum_add($self, str, (int)len);
   }
   void add_fp(FILE *fp) {
     char buf[4096];
@@ -971,11 +1041,14 @@ typedef struct {
     solv_chksum_add($self, &stb.st_size, sizeof(stb.st_size));
     solv_chksum_add($self, &stb.st_mtime, sizeof(stb.st_mtime));
   }
-  SWIGCDATA raw() {
+  BinaryBlob raw() {
+    BinaryBlob bl;
     int l;
     const unsigned char *b;
     b = solv_chksum_get($self, &l);
-    return cdata_void((void *)b, l);
+    bl.data = b;
+    bl.len = l;
+    return bl;
   }
   %newobject hex;
   char *hex() {
@@ -987,6 +1060,9 @@ typedef struct {
     ret = solv_malloc(2 * l + 1);
     solv_bin2hex(b, l, ret);
     return ret;
+  }
+  const char *typestr() {
+    return solv_chksum_type2str(solv_chksum_get_type($self));
   }
 
   bool __eq__(Chksum *chk) {
@@ -1005,7 +1081,6 @@ typedef struct {
   }
 #if defined(SWIGRUBY)
   %rename("to_s") __str__;
-  %rename("inspect") __repr__;
 #endif
 #if defined(SWIGPERL)
   %rename("str") __str__;
@@ -1030,11 +1105,19 @@ typedef struct {
 }
 
 %extend Pool {
+  static const int POOL_FLAG_PROMOTEEPOCH = POOL_FLAG_PROMOTEEPOCH;
+  static const int POOL_FLAG_FORBIDSELFCONFLICTS = POOL_FLAG_FORBIDSELFCONFLICTS;
+  static const int POOL_FLAG_OBSOLETEUSESPROVIDES = POOL_FLAG_OBSOLETEUSESPROVIDES;
+  static const int POOL_FLAG_IMPLICITOBSOLETEUSESPROVIDES = POOL_FLAG_IMPLICITOBSOLETEUSESPROVIDES;
+  static const int POOL_FLAG_OBSOLETEUSESCOLORS = POOL_FLAG_OBSOLETEUSESCOLORS;
+  static const int POOL_FLAG_IMPLICITOBSOLETEUSESCOLORS = POOL_FLAG_IMPLICITOBSOLETEUSESCOLORS;
+  static const int POOL_FLAG_NOINSTALLEDOBSOLETES = POOL_FLAG_NOINSTALLEDOBSOLETES;
+  static const int POOL_FLAG_HAVEDISTEPOCH = POOL_FLAG_HAVEDISTEPOCH;
+  static const int POOL_FLAG_NOOBSOLETESMULTIVERSION = POOL_FLAG_NOOBSOLETESMULTIVERSION;
+
   Pool() {
     Pool *pool = pool_create();
     return pool;
-  }
-  ~Pool() {
   }
   void set_debuglevel(int level) {
     pool_setdebuglevel($self, level);
@@ -1135,13 +1218,22 @@ typedef struct {
   }
 #endif
 
-  void free() {
+  ~Pool() {
     Pool_set_loadcallback($self, 0);
     pool_free($self);
+  }
+  disown_helper free() {
+    Pool_set_loadcallback($self, 0);
+    pool_free($self);
+    return 0;
+  }
+  disown_helper disown() {
+    return 0;
   }
   Id str2id(const char *str, bool create=1) {
     return pool_str2id($self, str, create);
   }
+  %newobject Dep;
   Dep *Dep(const char *str, bool create=1) {
     Id id = pool_str2id($self, str, create);
     return new_Dep($self, id);
@@ -1178,7 +1270,7 @@ typedef struct {
   Id lookup_id(Id entry, Id keyname) {
     return pool_lookup_id($self, entry, keyname);
   }
-  unsigned int lookup_num(Id entry, Id keyname, unsigned int notfound = 0) {
+  unsigned long long lookup_num(Id entry, Id keyname, unsigned long long notfound = 0) {
     return pool_lookup_num($self, entry, keyname, notfound);
   }
   bool lookup_void(Id entry, Id keyname) {
@@ -1192,7 +1284,11 @@ typedef struct {
   }
 
   %newobject Dataiterator;
-  Dataiterator *Dataiterator(Id p, Id key, const char *match, int flags) {
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
+    return new_Dataiterator($self, 0, 0, key, match, flags);
+  }
+  %newobject Dataiterator_solvid;
+  Dataiterator *Dataiterator_solvid(Id p, Id key, const char *match = 0, int flags = 0) {
     return new_Dataiterator($self, 0, p, key, match, flags);
   }
   const char *solvid2str(Id solvid) {
@@ -1211,6 +1307,7 @@ typedef struct {
     pool_createwhatprovides($self);
   }
 
+  %newobject id2solvable;
   XSolvable *id2solvable(Id id) {
     return new_XSolvable($self, id);
   }
@@ -1231,6 +1328,7 @@ typedef struct {
       return 0;
     return pool_id2repo($self, id);
   }
+
   %newobject repos;
   Pool_repo_iterator * const repos;
   %{
@@ -1244,12 +1342,16 @@ typedef struct {
   }
 
   Repo *installed;
+  const char * const errstr;
   %{
   SWIGINTERN void Pool_installed_set(Pool *pool, Repo *installed) {
     pool_set_installed(pool, installed);
   }
   Repo *Pool_installed_get(Pool *pool) {
     return pool->installed;
+  }
+  const char *Pool_errstr_get(Pool *pool) {
+    return pool_errstr(pool);
   }
   %}
 
@@ -1274,13 +1376,14 @@ typedef struct {
     return q;
   }
 
+  %newobject Job;
   Job *Job(int how, Id what) {
     return new_Job($self, how, what);
   }
 
   %typemap(out) Queue whatprovides Queue2Array(XSolvable *, 1, new_XSolvable(arg1, id));
   %newobject whatprovides;
-  Queue whatprovides(Id dep) {
+  Queue whatprovides(DepId dep) {
     Pool *pool = $self;
     Queue q;
     Id p, pp;
@@ -1297,7 +1400,7 @@ typedef struct {
 #ifdef SWIGRUBY
   %rename("isknownarch?") isknownarch;
 #endif
-  bool isknownarch(Id id) {
+  bool isknownarch(DepId id) {
     Pool *pool = $self;
     if (!id || id == ID_EMPTY)
       return 0;
@@ -1412,95 +1515,126 @@ rb_eval_string(
     return repo_add_solv($self, fp, flags) == 0;
   }
 
+  %newobject add_solvable;
   XSolvable *add_solvable() {
     Id solvid = repo_add_solvable($self);
     return new_XSolvable($self->pool, solvid);
   }
 
 #ifdef ENABLE_RPMDB
-  bool add_rpmdb(Repo *ref, int flags = 0) {
-    return repo_add_rpmdb($self, ref, flags);
+  bool add_rpmdb(int flags = 0) {
+    return repo_add_rpmdb($self, 0, flags) == 0;
   }
-  Id add_rpm(const char *name, int flags = 0) {
-    return repo_add_rpm($self, name, flags);
+  bool add_rpmdb_reffp(FILE *reffp, int flags = 0) {
+    return repo_add_rpmdb_reffp($self, reffp, flags) == 0;
+  }
+  %newobject add_rpm;
+  XSolvable *add_rpm(const char *name, int flags = 0) {
+    return new_XSolvable($self->pool, repo_add_rpm($self, name, flags));
+  }
+#endif
+#ifdef ENABLE_PUBKEY
+#ifdef ENABLE_RPMDB
+  bool add_rpmdb_pubkeys(int flags = 0) {
+    return repo_add_rpmdb_pubkeys($self, flags) == 0;
+  }
+#endif
+  %newobject add_pubkey;
+  XSolvable *add_pubkey(const char *keyfile, int flags = 0) {
+    return new_XSolvable($self->pool, repo_add_pubkey($self, keyfile, flags));
+  }
+  bool add_keyring(FILE *fp, int flags = 0) {
+    return repo_add_keyring($self, fp, flags);
+  }
+  bool add_keydir(const char *keydir, const char *suffix, int flags = 0) {
+    return repo_add_keydir($self, keydir, suffix, flags);
   }
 #endif
 #ifdef ENABLE_RPMMD
   bool add_rpmmd(FILE *fp, const char *language, int flags = 0) {
-    return repo_add_rpmmd($self, fp, language, flags);
+    return repo_add_rpmmd($self, fp, language, flags) == 0;
   }
   bool add_repomdxml(FILE *fp, int flags = 0) {
-    return repo_add_repomdxml($self, fp, flags);
+    return repo_add_repomdxml($self, fp, flags) == 0;
   }
   bool add_updateinfoxml(FILE *fp, int flags = 0) {
-    return repo_add_updateinfoxml($self, fp, flags);
+    return repo_add_updateinfoxml($self, fp, flags) == 0;
   }
   bool add_deltainfoxml(FILE *fp, int flags = 0) {
-    return repo_add_deltainfoxml($self, fp, flags);
+    return repo_add_deltainfoxml($self, fp, flags) == 0;
   }
 #endif
 #ifdef ENABLE_DEBIAN
   bool add_debdb(int flags = 0) {
-    return repo_add_debdb($self, flags);
+    return repo_add_debdb($self, flags) == 0;
   }
-  Id add_deb(const char *name, int flags = 0) {
-    return repo_add_deb($self, name, flags);
+  bool add_debpackages(FILE *fp, int flags = 0) {
+    return repo_add_debpackages($self, fp, flags) == 0;
+  }
+  %newobject add_deb;
+  XSolvable *add_deb(const char *name, int flags = 0) {
+    return new_XSolvable($self->pool, repo_add_deb($self, name, flags));
   }
 #endif
 #ifdef ENABLE_SUSEREPO
   bool add_susetags(FILE *fp, Id defvendor, const char *language, int flags = 0) {
-    return repo_add_susetags($self, fp, defvendor, language, flags);
+    return repo_add_susetags($self, fp, defvendor, language, flags) == 0;
   }
   bool add_content(FILE *fp, int flags = 0) {
-    return repo_add_content($self, fp, flags);
+    return repo_add_content($self, fp, flags) == 0;
   }
   bool add_products(const char *proddir, int flags = 0) {
-    return repo_add_products($self, proddir, flags);
+    return repo_add_products($self, proddir, flags) == 0;
   }
 #endif
 #ifdef ENABLE_MDKREPO
   bool add_mdk(FILE *fp, int flags = 0) {
-    return repo_add_mdk($self, fp, flags);
+    return repo_add_mdk($self, fp, flags) == 0;
   }
   bool add_mdk_info(FILE *fp, int flags = 0) {
-    return repo_add_mdk($self, fp, flags);
+    return repo_add_mdk_info($self, fp, flags) == 0;
   }
 #endif
 #ifdef ENABLE_ARCHREPO
   bool add_arch_repo(FILE *fp, int flags = 0) {
-    return repo_add_arch_repo($self, fp, flags);
+    return repo_add_arch_repo($self, fp, flags) == 0;
   }
-  Id add_arch_pkg(const char *name, int flags = 0) {
-    return repo_add_arch_pkg($self, name, flags);
+  bool add_arch_local(const char *dir, int flags = 0) {
+    return repo_add_arch_local($self, dir, flags) == 0;
+  }
+  %newobject add_arch_pkg;
+  XSolvable *add_arch_pkg(const char *name, int flags = 0) {
+    return new_XSolvable($self->pool, repo_add_arch_pkg($self, name, flags));
+  }
+#endif
+#ifdef SUSE
+  bool add_autopattern(int flags = 0) {
+    return repo_add_autopattern($self, flags) == 0;
   }
 #endif
   void internalize() {
     repo_internalize($self);
   }
-  const char *lookup_str(Id entry, Id keyname) {
-    return repo_lookup_str($self, entry, keyname);
-  }
-  Id lookup_id(Id entry, Id keyname) {
-    return repo_lookup_id($self, entry, keyname);
-  }
-  unsigned long long lookup_num(Id entry, Id keyname, unsigned long long notfound = 0) {
-    return repo_lookup_num($self, entry, keyname, notfound);
-  }
-  void write(FILE *fp) {
-    repo_write($self, fp);
+  bool write(FILE *fp) {
+    return repo_write($self, fp) == 0;
   }
   # HACK, remove if no longer needed!
   bool write_first_repodata(FILE *fp) {
     int oldnrepodata = $self->nrepodata;
+    int res;
     $self->nrepodata = oldnrepodata > 2 ? 2 : oldnrepodata;
-    repo_write($self, fp);
+    res = repo_write($self, fp);
     $self->nrepodata = oldnrepodata;
-    return 1;
+    return res == 0;
   }
 
   %newobject Dataiterator;
-  Dataiterator *Dataiterator(Id p, Id key, const char *match, int flags) {
-    return new_Dataiterator($self->pool, $self, p, key, match, flags);
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
+    return new_Dataiterator($self->pool, $self, 0, key, match, flags);
+  }
+  %newobject Dataiterator_meta;
+  Dataiterator *Dataiterator_meta(Id key, const char *match = 0, int flags = 0) {
+    return new_Dataiterator($self->pool, $self, SOLVID_META, key, match, flags);
   }
 
   Id const id;
@@ -1509,17 +1643,30 @@ rb_eval_string(
     return repo->repoid;
   }
   %}
+  %newobject solvables;
   Repo_solvable_iterator * const solvables;
   %{
   SWIGINTERN Repo_solvable_iterator * Repo_solvables_get(Repo *repo) {
     return new_Repo_solvable_iterator(repo);
   }
   %}
+  %newobject meta;
+  Datapos * const meta;
+  %{
+  SWIGINTERN Datapos * Repo_meta_get(Repo *repo) {
+    Datapos *pos = solv_calloc(1, sizeof(*pos));
+    pos->solvid = SOLVID_META;
+    pos->repo = repo;
+    return pos;
+  }
+  %}
+
   %newobject solvables_iter;
   Repo_solvable_iterator *solvables_iter() {
     return new_Repo_solvable_iterator($self);
   }
 
+  %newobject add_repodata;
   XRepodata *add_repodata(int flags = 0) {
     Repodata *rd = repo_add_repodata($self, flags);
     return new_XRepodata($self, rd->repodataid);
@@ -1531,7 +1678,7 @@ rb_eval_string(
       return;
     data = repo_id2repodata($self, $self->nrepodata - 1);
     if (data->state != REPODATA_STUB)
-      repodata_create_stubs(data);
+      (void)repodata_create_stubs(data);
   }
 #ifdef SWIGRUBY
   %rename("iscontiguous?") iscontiguous;
@@ -1543,6 +1690,7 @@ rb_eval_string(
         return 0;
     return 1;
   }
+  %newobject first_repodata;
   XRepodata *first_repodata() {
     Repodata *data;
     int i;
@@ -1568,6 +1716,13 @@ rb_eval_string(
     queue_push2(&sel->q, SOLVER_SOLVABLE_REPO | setflags, $self->repoid);
     return sel;
   }
+
+#ifdef ENABLE_PUBKEY
+  %newobject find_pubkey;
+  XSolvable *find_pubkey(const char *keyid) {
+    return new_XSolvable($self->pool, repo_find_pubkey($self, keyid));
+  }
+#endif
 
   bool __eq__(Repo *repo) {
     return $self == repo;
@@ -1609,6 +1764,7 @@ rb_eval_string(
   static const int SEARCH_NOCASE = SEARCH_NOCASE;
   static const int SEARCH_FILES = SEARCH_FILES;
   static const int SEARCH_COMPLETE_FILELIST = SEARCH_COMPLETE_FILELIST;
+  static const int SEARCH_CHECKSUMS = SEARCH_CHECKSUMS;
 
   Dataiterator(Pool *pool, Repo *repo, Id p, Id key, const char *match, int flags) {
     Dataiterator *di = solv_calloc(1, sizeof(*di));
@@ -1620,14 +1776,12 @@ rb_eval_string(
     solv_free($self);
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Dataiterator *__iter__() {
-    Dataiterator *ndi;
-    ndi = solv_calloc(1, sizeof(*ndi));
-    dataiterator_init_clone(ndi, $self);
-    return ndi;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -1636,11 +1790,9 @@ rb_eval_string(
     }
   }
 #endif
-
 #ifdef SWIGPERL
   perliter(solv::Dataiterator)
 #endif
-
   %newobject __next__;
   Datamatch *__next__() {
     Dataiterator *ndi;
@@ -1687,6 +1839,24 @@ rb_eval_string(
     pool->pos = oldpos;
     return r;
   }
+  unsigned long long lookup_num(Id keyname, unsigned long long notfound = 0) {
+    Pool *pool = $self->repo->pool;
+    Datapos oldpos = pool->pos;
+    unsigned long long r;
+    pool->pos = *$self;
+    r = pool_lookup_num(pool, SOLVID_POS, keyname, notfound);
+    pool->pos = oldpos;
+    return r;
+  }
+  bool lookup_void(Id keyname) {
+    Pool *pool = $self->repo->pool;
+    Datapos oldpos = pool->pos;
+    int r;
+    pool->pos = *$self;
+    r = pool_lookup_void(pool, SOLVID_POS, keyname);
+    pool->pos = oldpos;
+    return r;
+  }
   %newobject lookup_checksum;
   Chksum *lookup_checksum(Id keyname) {
     Pool *pool = $self->repo->pool;
@@ -1720,6 +1890,26 @@ rb_eval_string(
     pool->pos = oldpos;
     return loc;
   }
+  Queue lookup_idarray(Id keyname) {
+    Pool *pool = $self->repo->pool;
+    Datapos oldpos = pool->pos;
+    Queue r;
+    queue_init(&r);
+    pool->pos = *$self;
+    pool_lookup_idarray(pool, SOLVID_POS, keyname, &r);
+    pool->pos = oldpos;
+    return r;
+  }
+  %newobject Dataiterator;
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
+    Pool *pool = $self->repo->pool;
+    Datapos oldpos = pool->pos;
+    Dataiterator *di;
+    pool->pos = *$self;
+    di = new_Dataiterator(pool, 0, SOLVID_POS, key, match, flags);
+    pool->pos = oldpos;
+    return di;
+  }
 }
 
 %extend Datamatch {
@@ -1729,38 +1919,67 @@ rb_eval_string(
   }
   %newobject solvable;
   XSolvable * const solvable;
+  Id const key_id;
+  const char * const key_idstr;
+  Id const type_id;
+  const char * const type_idstr;
+  Id const id;
+  const char * const idstr;
+  const char * const str;
+  BinaryBlob const binary;
+  unsigned long long const num;
+  unsigned int const num2;
   %{
   SWIGINTERN XSolvable *Datamatch_solvable_get(Dataiterator *di) {
     return new_XSolvable(di->pool, di->solvid);
   }
+  SWIGINTERN Id Datamatch_key_id_get(Dataiterator *di) {
+    return di->key->name;
+  }
+  SWIGINTERN const char *Datamatch_key_idstr_get(Dataiterator *di) {
+    return pool_id2str(di->pool, di->key->name);
+  }
+  SWIGINTERN Id Datamatch_type_id_get(Dataiterator *di) {
+    return di->key->type;
+  }
+  SWIGINTERN const char *Datamatch_type_idstr_get(Dataiterator *di) {
+    return pool_id2str(di->pool, di->key->type);
+  }
+  SWIGINTERN Id Datamatch_id_get(Dataiterator *di) {
+    return di->kv.id;
+  }
+  SWIGINTERN const char *Datamatch_idstr_get(Dataiterator *di) {
+   if (di->data && (di->key->type == REPOKEY_TYPE_DIR || di->key->type == REPOKEY_TYPE_DIRSTRARRAY || di->key->type == REPOKEY_TYPE_DIRNUMNUMARRAY))
+      return repodata_dir2str(di->data,  di->kv.id, 0);
+    if (di->data && di->data->localpool)
+      return stringpool_id2str(&di->data->spool, di->kv.id);
+    return pool_id2str(di->pool, di->kv.id);
+  }
+  SWIGINTERN const char * const Datamatch_str_get(Dataiterator *di) {
+    return di->kv.str;
+  }
+  SWIGINTERN BinaryBlob Datamatch_binary_get(Dataiterator *di) {
+    BinaryBlob bl;
+    bl.data = 0;
+    bl.len = 0;
+    if (di->key->type == REPOKEY_TYPE_BINARY)
+      {
+        bl.data = di->kv.str;
+        bl.len = di->kv.num;
+      }
+    else if ((bl.len = solv_chksum_len(di->key->type)) != 0)
+      bl.data = di->kv.str;
+    return bl;
+  }
+  SWIGINTERN unsigned long long Datamatch_num_get(Dataiterator *di) {
+   if (di->key->type == REPOKEY_TYPE_NUM)
+     return SOLV_KV_NUM64(&di->kv);
+   return di->kv.num;
+  }
+  SWIGINTERN unsigned int Datamatch_num2_get(Dataiterator *di) {
+    return di->kv.num2;
+  }
   %}
-  Id key_id() {
-    return $self->key->name;
-  }
-  const char *key_idstr() {
-    return pool_id2str($self->pool, $self->key->name);
-  }
-  Id type_id() {
-    return $self->key->type;
-  }
-  const char *type_idstr() {
-    return pool_id2str($self->pool, $self->key->type);
-  }
-  Id id() {
-     return $self->kv.id;
-  }
-  const char *idstr() {
-     return pool_id2str($self->pool, $self->kv.id);
-  }
-  const char *str() {
-     return $self->kv.str;
-  }
-  int num() {
-     return $self->kv.num;
-  }
-  int num2() {
-     return $self->kv.num2;
-  }
   %newobject pos;
   Datapos *pos() {
     Pool *pool = $self->pool;
@@ -1781,19 +2000,17 @@ rb_eval_string(
     pool->pos = oldpos;
     return pos;
   }
-  void setpos() {
-    dataiterator_setpos($self);
-  }
-  void setpos_parent() {
-    dataiterator_setpos_parent($self);
-  }
 #if defined(SWIGPERL)
-  %rename("str") __str__;
+  /* cannot use str here because swig reports a bogus conflict... */
+  %rename("stringify") __str__;
+  %perlcode {
+    *solv::Datamatch::str = *solvc::Datamatch_stringify;
+  }
 #endif
   const char *__str__() {
-    if (!repodata_stringify($self->pool, $self->data, $self->key, &$self->kv, $self->flags))
-      return "";
-    return $self->kv.str;
+    KeyValue kv = $self->kv;
+    const char *str = repodata_stringify($self->pool, $self->data, $self->key, &kv, SEARCH_FILES | SEARCH_CHECKSUMS);
+    return str ? str : "";
   }
 }
 
@@ -1805,14 +2022,12 @@ rb_eval_string(
     return s;
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Pool_solvable_iterator *__iter__() {
-    Pool_solvable_iterator *s;
-    s = solv_calloc(1, sizeof(*s));
-    *s = *$self;
-    return s;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -1821,7 +2036,6 @@ rb_eval_string(
     }
   }
 #endif
-
 #ifdef SWIGPERL
   perliter(solv::Pool_solvable_iterator)
 #endif
@@ -1863,14 +2077,12 @@ rb_eval_string(
     return s;
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Pool_repo_iterator *__iter__() {
-    Pool_repo_iterator *s;
-    s = solv_calloc(1, sizeof(*s));
-    *s = *$self;
-    return s;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -1878,6 +2090,9 @@ rb_eval_string(
       return NULL;
     }
   }
+#endif
+#ifdef SWIGPERL
+  perliter(solv::Pool_repo_iterator)
 #endif
   %newobject __next__;
   Repo *__next__() {
@@ -1918,14 +2133,12 @@ rb_eval_string(
     return s;
   }
 #if defined(SWIGPYTHON)
-  %newobject __iter__;
-  Repo_solvable_iterator *__iter__() {
-    Repo_solvable_iterator *s;
-    s = solv_calloc(1, sizeof(*s));
-    *s = *$self;
-    return s;
+  %pythoncode {
+    def __iter__(self): return self
   }
+#ifndef PYTHON3
   %rename("next") __next__();
+#endif
   %exception __next__ {
     $action
     if (!result) {
@@ -1933,6 +2146,9 @@ rb_eval_string(
       return NULL;
     }
   }
+#endif
+#ifdef SWIGPERL
+  perliter(solv::Repo_solvable_iterator)
 #endif
   %newobject __next__;
   XSolvable *__next__() {
@@ -2070,14 +2286,6 @@ rb_eval_string(
     Solvable *s = $self->pool->solvables + $self->id;
     Queue r;
     queue_init(&r);
-    if (marker == -1 || marker == 1) {
-      if (keyname == SOLVABLE_PROVIDES)
-        marker = marker < 0 ? -SOLVABLE_FILEMARKER : SOLVABLE_FILEMARKER;
-      else if (keyname == SOLVABLE_REQUIRES)
-        marker = marker < 0 ? -SOLVABLE_PREREQMARKER : SOLVABLE_PREREQMARKER;
-      else
-        marker = 0;
-    }
     solvable_lookup_deparray(s, keyname, &r, marker);
     return r;
   }
@@ -2087,14 +2295,6 @@ rb_eval_string(
     Solvable *s = $self->pool->solvables + $self->id;
     Queue r;
     queue_init(&r);
-    if (marker == -1 || marker == 1) {
-      if (keyname == SOLVABLE_PROVIDES)
-        marker = marker < 0 ? -SOLVABLE_FILEMARKER : SOLVABLE_FILEMARKER;
-      else if (keyname == SOLVABLE_REQUIRES)
-        marker = marker < 0 ? -SOLVABLE_PREREQMARKER : SOLVABLE_PREREQMARKER;
-      else
-        marker = 0;
-    }
     solvable_lookup_deparray(s, keyname, &r, marker);
     return r;
   }
@@ -2102,7 +2302,7 @@ rb_eval_string(
     return solvable_lookup_location($self->pool->solvables + $self->id, OUTPUT);
   }
   %newobject Dataiterator;
-  Dataiterator *Dataiterator(Id key, const char *match, int flags) {
+  Dataiterator *Dataiterator(Id key, const char *match = 0, int flags = 0) {
     return new_Dataiterator($self->pool, 0, $self->id, key, match, flags);
   }
 #ifdef SWIGRUBY
@@ -2209,8 +2409,7 @@ rb_eval_string(
   /* old interface, please use the generic add_deparray instead */
   void add_provides(DepId id, Id marker = -1) {
     Solvable *s = $self->pool->solvables + $self->id;
-    if (marker == -1 || marker == 1)
-      marker = marker < 0 ? -SOLVABLE_FILEMARKER : SOLVABLE_FILEMARKER;
+    marker = solv_depmarker(SOLVABLE_PROVIDES, marker);
     s->provides = repo_addid_dep(s->repo, s->provides, id, marker);
   }
   void add_obsoletes(DepId id) {
@@ -2223,8 +2422,7 @@ rb_eval_string(
   }
   void add_requires(DepId id, Id marker = -1) {
     Solvable *s = $self->pool->solvables + $self->id;
-    if (marker == -1 || marker == 1)
-      marker = marker < 0 ? -SOLVABLE_PREREQMARKER : SOLVABLE_PREREQMARKER;
+    marker = solv_depmarker(SOLVABLE_REQUIRES, marker);
     s->requires = repo_addid_dep(s->repo, s->requires, id, marker);
   }
   void add_recommends(DepId id) {
@@ -2244,16 +2442,13 @@ rb_eval_string(
     s->enhances = repo_addid_dep(s->repo, s->enhances, id, 0);
   }
 
+  void unset(Id keyname) {
+    Solvable *s = $self->pool->solvables + $self->id;
+    repo_unset(s->repo, $self->id, keyname);
+  }
+
   void add_deparray(Id keyname, DepId id, Id marker = -1) {
     Solvable *s = $self->pool->solvables + $self->id;
-    if (marker == -1 || marker == 1) {
-      if (keyname == SOLVABLE_PROVIDES)
-        marker = marker < 0 ? -SOLVABLE_FILEMARKER : SOLVABLE_FILEMARKER;
-      else if (keyname == SOLVABLE_REQUIRES)
-        marker = marker < 0 ? -SOLVABLE_PREREQMARKER : SOLVABLE_PREREQMARKER;
-      else
-        marker = 0;
-    }
     solvable_add_deparray(s, keyname, id, marker);
   }
 
@@ -2262,6 +2457,16 @@ rb_eval_string(
     Selection *sel = new_Selection($self->pool);
     queue_push2(&sel->q, SOLVER_SOLVABLE | setflags, $self->id);
     return sel;
+  }
+
+#ifdef SWIGRUBY
+  %rename("identical?") identical;
+#endif
+  bool identical(XSolvable *s2) {
+    return solvable_identical($self->pool->solvables + $self->id, s2->pool->solvables + s2->id);
+  }
+  int evrcmp(XSolvable *s2) {
+    return pool_evrcmp($self->pool, $self->pool->solvables[$self->id].evr, s2->pool->solvables[s2->id].evr, EVRCMP_COMPARE);
   }
 
   bool __eq__(XSolvable *s) {
@@ -2325,8 +2530,8 @@ rb_eval_string(
   int solution_count() {
     return solver_solution_count($self->solv, $self->id);
   }
-  %newobject solutions;
   %typemap(out) Queue solutions Queue2Array(Solution *, 1, new_Solution(arg1, id));
+  %newobject solutions;
   Queue solutions() {
     Queue q;
     int i, cnt;
@@ -2335,6 +2540,12 @@ rb_eval_string(
     for (i = 1; i <= cnt; i++)
       queue_push(&q, i);
     return q;
+  }
+#if defined(SWIGPERL)
+  %rename("str") __str__;
+#endif
+  const char *__str__() {
+    return solver_problem2str($self->solv, $self->id);
   }
 }
 
@@ -2351,8 +2562,8 @@ rb_eval_string(
     return solver_solutionelement_count($self->solv, $self->problemid, $self->id);
   }
 
-  %newobject elements;
   %typemap(out) Queue elements Queue2Array(Solutionelement *, 4, new_Solutionelement(arg1->solv, arg1->problemid, arg1->id, id, idp[1], idp[2], idp[3]));
+  %newobject elements;
   Queue elements(bool expandreplaces=0) {
     Queue q;
     int i, cnt;
@@ -2384,6 +2595,10 @@ rb_eval_string(
               queue_push2(&q, i, SOLVER_SOLUTION_REPLACE_VENDORCHANGE);
               queue_push2(&q, p, rp);
             }
+            if ((illegal & POLICY_ILLEGAL_NAMECHANGE) != 0) {
+              queue_push2(&q, i, SOLVER_SOLUTION_REPLACE_NAMECHANGE);
+              queue_push2(&q, p, rp);
+            }
             continue;
           }
         }
@@ -2410,6 +2625,7 @@ rb_eval_string(
   const char *str() {
     Id p = $self->type;
     Id rp = $self->p;
+    int illegal = 0;
     if (p == SOLVER_SOLUTION_ERASE)
       {
         p = rp;
@@ -2421,15 +2637,19 @@ rb_eval_string(
         rp = $self->rp;
       }
     else if (p == SOLVER_SOLUTION_REPLACE_DOWNGRADE)
-      return pool_tmpjoin($self->solv->pool, "allow ", policy_illegal2str($self->solv, POLICY_ILLEGAL_DOWNGRADE, $self->solv->pool->solvables + $self->p, $self->solv->pool->solvables + $self->rp), 0);
+      illegal = POLICY_ILLEGAL_DOWNGRADE;
     else if (p == SOLVER_SOLUTION_REPLACE_ARCHCHANGE)
-      return pool_tmpjoin($self->solv->pool, "allow ", policy_illegal2str($self->solv, POLICY_ILLEGAL_ARCHCHANGE, $self->solv->pool->solvables + $self->p, $self->solv->pool->solvables + $self->rp), 0);
+      illegal = POLICY_ILLEGAL_ARCHCHANGE;
     else if (p == SOLVER_SOLUTION_REPLACE_VENDORCHANGE)
-      return pool_tmpjoin($self->solv->pool, "allow ", policy_illegal2str($self->solv, POLICY_ILLEGAL_VENDORCHANGE, $self->solv->pool->solvables + $self->p, $self->solv->pool->solvables + $self->rp), 0);
+      illegal = POLICY_ILLEGAL_VENDORCHANGE;
+    else if (p == SOLVER_SOLUTION_REPLACE_NAMECHANGE)
+      illegal = POLICY_ILLEGAL_NAMECHANGE;
+    if (illegal)
+      return pool_tmpjoin($self->solv->pool, "allow ", policy_illegal2str($self->solv, illegal, $self->solv->pool->solvables + $self->p, $self->solv->pool->solvables + $self->rp), 0);
     return solver_solutionelement2str($self->solv, p, rp);
   }
-  %newobject replaceelements;
   %typemap(out) Queue replaceelements Queue2Array(Solutionelement *, 1, new_Solutionelement(arg1->solv, arg1->problemid, arg1->solutionid, arg1->id, id, arg1->p, arg1->rp));
+  %newobject replaceelements;
   Queue replaceelements() {
     Queue q;
     int illegal;
@@ -2445,6 +2665,8 @@ rb_eval_string(
       queue_push(&q, SOLVER_SOLUTION_REPLACE_ARCHCHANGE);
     if ((illegal & POLICY_ILLEGAL_VENDORCHANGE) != 0)
       queue_push(&q, SOLVER_SOLUTION_REPLACE_VENDORCHANGE);
+    if ((illegal & POLICY_ILLEGAL_NAMECHANGE) != 0)
+      queue_push(&q, SOLVER_SOLUTION_REPLACE_NAMECHANGE);
     if (!q.count)
       queue_push(&q, $self->type);
     return q;
@@ -2467,7 +2689,7 @@ rb_eval_string(
       return new_XSolvable(e->solv->pool, e->rp);
     }
     SWIGINTERN int Solutionelement_jobidx_get(Solutionelement *e) {
-      if (e->type != SOLVER_SOLUTION_JOB)
+      if (e->type != SOLVER_SOLUTION_JOB && e->type != SOLVER_SOLUTION_POOLJOB)
         return -1;
       return (e->p - 1) / 2;
     }
@@ -2475,12 +2697,12 @@ rb_eval_string(
   %newobject Job;
   Job *Job() {
     Id extraflags = solver_solutionelement_extrajobflags($self->solv, $self->problemid, $self->solutionid);
-    if ($self->type == SOLVER_SOLUTION_JOB)
+    if ($self->type == SOLVER_SOLUTION_JOB || SOLVER_SOLUTION_POOLJOB)
       return new_Job($self->solv->pool, SOLVER_NOOP, 0);
     if ($self->type == SOLVER_SOLUTION_INFARCH || $self->type == SOLVER_SOLUTION_DISTUPGRADE || $self->type == SOLVER_SOLUTION_BEST)
-      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|extraflags, $self->p);
-    if ($self->type == SOLVER_SOLUTION_REPLACE || $self->type == SOLVER_SOLUTION_REPLACE_DOWNGRADE || $self->type == SOLVER_SOLUTION_REPLACE_ARCHCHANGE || $self->type == SOLVER_SOLUTION_REPLACE_VENDORCHANGE)
-      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|extraflags, $self->rp);
+      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|SOLVER_NOTBYUSER|extraflags, $self->p);
+    if ($self->type == SOLVER_SOLUTION_REPLACE || $self->type == SOLVER_SOLUTION_REPLACE_DOWNGRADE || $self->type == SOLVER_SOLUTION_REPLACE_ARCHCHANGE || $self->type == SOLVER_SOLUTION_REPLACE_VENDORCHANGE || $self->type == SOLVER_SOLUTION_REPLACE_NAMECHANGE)
+      return new_Job($self->solv->pool, SOLVER_INSTALL|SOLVER_SOLVABLE|SOLVER_NOTBYUSER|extraflags, $self->rp);
     if ($self->type == SOLVER_SOLUTION_ERASE)
       return new_Job($self->solv->pool, SOLVER_ERASE|SOLVER_SOLVABLE|extraflags, $self->p);
     return 0;
@@ -2504,6 +2726,8 @@ rb_eval_string(
   static const int SOLVER_RULE_JOB = SOLVER_RULE_JOB;
   static const int SOLVER_RULE_JOB_NOTHING_PROVIDES_DEP = SOLVER_RULE_JOB_NOTHING_PROVIDES_DEP;
   static const int SOLVER_RULE_JOB_PROVIDED_BY_SYSTEM = SOLVER_RULE_JOB_PROVIDED_BY_SYSTEM;
+  static const int SOLVER_RULE_JOB_UNKNOWN_PACKAGE = SOLVER_RULE_JOB_UNKNOWN_PACKAGE;
+  static const int SOLVER_RULE_JOB_UNSUPPORTED = SOLVER_RULE_JOB_UNSUPPORTED;
   static const int SOLVER_RULE_DISTUPGRADE = SOLVER_RULE_DISTUPGRADE;
   static const int SOLVER_RULE_INFARCH = SOLVER_RULE_INFARCH;
   static const int SOLVER_RULE_CHOICE = SOLVER_RULE_CHOICE;
@@ -2519,20 +2743,45 @@ rb_eval_string(
   static const int SOLVER_SOLUTION_REPLACE_DOWNGRADE = SOLVER_SOLUTION_REPLACE_DOWNGRADE;
   static const int SOLVER_SOLUTION_REPLACE_ARCHCHANGE = SOLVER_SOLUTION_REPLACE_ARCHCHANGE;
   static const int SOLVER_SOLUTION_REPLACE_VENDORCHANGE = SOLVER_SOLUTION_REPLACE_VENDORCHANGE;
+  static const int SOLVER_SOLUTION_REPLACE_NAMECHANGE = SOLVER_SOLUTION_REPLACE_NAMECHANGE;
 
   static const int POLICY_ILLEGAL_DOWNGRADE = POLICY_ILLEGAL_DOWNGRADE;
   static const int POLICY_ILLEGAL_ARCHCHANGE = POLICY_ILLEGAL_ARCHCHANGE;
   static const int POLICY_ILLEGAL_VENDORCHANGE = POLICY_ILLEGAL_VENDORCHANGE;
+  static const int POLICY_ILLEGAL_NAMECHANGE = POLICY_ILLEGAL_NAMECHANGE;
 
   static const int SOLVER_FLAG_ALLOW_DOWNGRADE = SOLVER_FLAG_ALLOW_DOWNGRADE;
   static const int SOLVER_FLAG_ALLOW_ARCHCHANGE = SOLVER_FLAG_ALLOW_ARCHCHANGE;
   static const int SOLVER_FLAG_ALLOW_VENDORCHANGE = SOLVER_FLAG_ALLOW_VENDORCHANGE;
+  static const int SOLVER_FLAG_ALLOW_NAMECHANGE = SOLVER_FLAG_ALLOW_NAMECHANGE;
   static const int SOLVER_FLAG_ALLOW_UNINSTALL = SOLVER_FLAG_ALLOW_UNINSTALL;
   static const int SOLVER_FLAG_NO_UPDATEPROVIDE = SOLVER_FLAG_NO_UPDATEPROVIDE;
   static const int SOLVER_FLAG_SPLITPROVIDES = SOLVER_FLAG_SPLITPROVIDES;
   static const int SOLVER_FLAG_IGNORE_RECOMMENDED = SOLVER_FLAG_IGNORE_RECOMMENDED;
   static const int SOLVER_FLAG_ADD_ALREADY_RECOMMENDED = SOLVER_FLAG_ADD_ALREADY_RECOMMENDED;
   static const int SOLVER_FLAG_NO_INFARCHCHECK = SOLVER_FLAG_NO_INFARCHCHECK;
+  static const int SOLVER_FLAG_BEST_OBEY_POLICY = SOLVER_FLAG_BEST_OBEY_POLICY;
+  static const int SOLVER_FLAG_NO_AUTOTARGET = SOLVER_FLAG_NO_AUTOTARGET;
+  static const int SOLVER_FLAG_DUP_ALLOW_DOWNGRADE = SOLVER_FLAG_DUP_ALLOW_DOWNGRADE;
+  static const int SOLVER_FLAG_DUP_ALLOW_ARCHCHANGE = SOLVER_FLAG_DUP_ALLOW_ARCHCHANGE;
+  static const int SOLVER_FLAG_DUP_ALLOW_VENDORCHANGE = SOLVER_FLAG_DUP_ALLOW_VENDORCHANGE;
+  static const int SOLVER_FLAG_DUP_ALLOW_NAMECHANGE = SOLVER_FLAG_DUP_ALLOW_NAMECHANGE;
+  static const int SOLVER_FLAG_KEEP_ORPHANS = SOLVER_FLAG_KEEP_ORPHANS;
+  static const int SOLVER_FLAG_BREAK_ORPHANS = SOLVER_FLAG_BREAK_ORPHANS;
+  static const int SOLVER_FLAG_FOCUS_INSTALLED = SOLVER_FLAG_FOCUS_INSTALLED;
+  static const int SOLVER_FLAG_YUM_OBSOLETES = SOLVER_FLAG_YUM_OBSOLETES;
+
+  static const int SOLVER_REASON_UNRELATED = SOLVER_REASON_UNRELATED;
+  static const int SOLVER_REASON_UNIT_RULE = SOLVER_REASON_UNIT_RULE;
+  static const int SOLVER_REASON_KEEP_INSTALLED = SOLVER_REASON_KEEP_INSTALLED;
+  static const int SOLVER_REASON_RESOLVE_JOB = SOLVER_REASON_RESOLVE_JOB;
+  static const int SOLVER_REASON_UPDATE_INSTALLED = SOLVER_REASON_UPDATE_INSTALLED;
+  static const int SOLVER_REASON_CLEANDEPS_ERASE = SOLVER_REASON_CLEANDEPS_ERASE;
+  static const int SOLVER_REASON_RESOLVE = SOLVER_REASON_RESOLVE;
+  static const int SOLVER_REASON_WEAKDEP = SOLVER_REASON_WEAKDEP;
+  static const int SOLVER_REASON_RESOLVE_ORPHAN = SOLVER_REASON_RESOLVE_ORPHAN;
+  static const int SOLVER_REASON_RECOMMENDED = SOLVER_REASON_RECOMMENDED;
+  static const int SOLVER_REASON_SUPPLEMENTED = SOLVER_REASON_SUPPLEMENTED;
 
   ~Solver() {
     solver_free($self);
@@ -2590,6 +2839,13 @@ rb_eval_string(
   Transaction *transaction() {
     return solver_create_transaction($self);
   }
+
+  int describe_decision(XSolvable *s, XRule **OUTPUT) {
+    int ruleid;
+    int reason = solver_describe_decision($self, s->id, &ruleid);
+    *OUTPUT = new_XRule($self, ruleid);
+    return reason;
+  }
 }
 
 %extend Transaction {
@@ -2614,6 +2870,7 @@ rb_eval_string(
   static const int SOLVER_TRANSACTION_SHOW_OBSOLETES = SOLVER_TRANSACTION_SHOW_OBSOLETES;
   static const int SOLVER_TRANSACTION_SHOW_MULTIINSTALL = SOLVER_TRANSACTION_SHOW_MULTIINSTALL;
   static const int SOLVER_TRANSACTION_CHANGE_IS_REINSTALL = SOLVER_TRANSACTION_CHANGE_IS_REINSTALL;
+  static const int SOLVER_TRANSACTION_OBSOLETE_IS_UPGRADE = SOLVER_TRANSACTION_OBSOLETE_IS_UPGRADE;
   static const int SOLVER_TRANSACTION_MERGE_VENDORCHANGES = SOLVER_TRANSACTION_MERGE_VENDORCHANGES;
   static const int SOLVER_TRANSACTION_MERGE_ARCHCHANGES = SOLVER_TRANSACTION_MERGE_ARCHCHANGES;
   static const int SOLVER_TRANSACTION_RPM_ONLY = SOLVER_TRANSACTION_RPM_ONLY;
@@ -2636,8 +2893,8 @@ rb_eval_string(
     return new_XSolvable($self->pool, op);
   }
 
-  %newobject allothersolvables;
   %typemap(out) Queue allothersolvables Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
+  %newobject allothersolvables;
   Queue allothersolvables(XSolvable *s) {
     Queue q;
     queue_init(&q);
@@ -2654,6 +2911,7 @@ rb_eval_string(
     return q;
   }
 
+  # deprecated, use newsolvables instead
   %typemap(out) Queue newpackages Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
   %newobject newpackages;
   Queue newpackages() {
@@ -2665,6 +2923,7 @@ rb_eval_string(
     return q;
   }
 
+  # deprecated, use keptsolvables instead
   %typemap(out) Queue keptpackages Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
   %newobject keptpackages;
   Queue keptpackages() {
@@ -2677,8 +2936,31 @@ rb_eval_string(
     return q;
   }
 
+  %typemap(out) Queue newsolvables Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
+  %newobject newsolvables;
+  Queue newsolvables() {
+    Queue q;
+    int cut;
+    queue_init(&q);
+    cut = transaction_installedresult(self, &q);
+    queue_truncate(&q, cut);
+    return q;
+  }
+
+  %typemap(out) Queue keptsolvables Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
+  %newobject keptsolvables;
+  Queue keptsolvables() {
+    Queue q;
+    int cut;
+    queue_init(&q);
+    cut = transaction_installedresult(self, &q);
+    if (cut)
+      queue_deleten(&q, 0, cut);
+    return q;
+  }
+
   %typemap(out) Queue steps Queue2Array(XSolvable *, 1, new_XSolvable(arg1->pool, id));
-  %newobject steps ;
+  %newobject steps;
   Queue steps() {
     Queue q;
     queue_init_clone(&q, &$self->steps);
@@ -2691,7 +2973,7 @@ rb_eval_string(
   int calc_installsizechange() {
     return transaction_calc_installsizechange($self);
   }
-  void order(int flags) {
+  void order(int flags=0) {
     transaction_order($self, flags);
   }
 }
@@ -2707,22 +2989,24 @@ rb_eval_string(
     cl->toid = toid;
     return cl;
   }
-  %newobject solvables;
   %typemap(out) Queue solvables Queue2Array(XSolvable *, 1, new_XSolvable(arg1->transaction->pool, id));
+  %newobject solvables;
   Queue solvables() {
     Queue q;
     queue_init(&q);
     transaction_classify_pkgs($self->transaction, $self->mode, $self->type, $self->fromid, $self->toid, &q);
     return q;
   }
-  %newobject fromdep;
-  Dep *fromdep() {
-    return new_Dep($self->transaction->pool, $self->fromid);
-  }
-  %newobject todep;
-  Dep *todep() {
-    return new_Dep($self->transaction->pool, $self->toid);
-  }
+  const char * const fromstr;
+  const char * const tostr;
+  %{
+    SWIGINTERN const char *TransactionClass_fromstr_get(TransactionClass *cl) {
+      return pool_id2str(cl->transaction->pool, cl->fromid);
+    }
+    SWIGINTERN const char *TransactionClass_tostr_get(TransactionClass *cl) {
+      return pool_id2str(cl->transaction->pool, cl->toid);
+    }
+  %}
 }
 
 %extend XRule {
@@ -2734,9 +3018,16 @@ rb_eval_string(
     xr->id = id;
     return xr;
   }
+  int const type;
+  %{
+    SWIGINTERN int XRule_type_get(XRule *xr) {
+      return solver_ruleclass(xr->solv, xr->id);
+    }
+  %}
+  %newobject info;
   Ruleinfo *info() {
     Id type, source, target, dep;
-    type =  solver_ruleinfo($self->solv, $self->id, &source, &target, &dep);
+    type = solver_ruleinfo($self->solv, $self->id, &source, &target, &dep);
     return new_Ruleinfo($self, type, source, target, dep);
   }
   %typemap(out) Queue allinfos Queue2Array(Ruleinfo *, 4, new_Ruleinfo(arg1, id, idp[1], idp[2], idp[3]));
@@ -2763,18 +3054,22 @@ rb_eval_string(
 }
 
 %extend Ruleinfo {
-  Ruleinfo(XRule *r, Id type, Id source, Id target, Id dep) {
+  Ruleinfo(XRule *r, Id type, Id source, Id target, Id dep_id) {
     Ruleinfo *ri = solv_calloc(1, sizeof(*ri));
     ri->solv = r->solv;
     ri->rid = r->id;
     ri->type = type;
     ri->source = source;
     ri->target = target;
-    ri->dep = dep;
+    ri->dep_id = dep_id;
     return ri;
   }
+  %newobject solvable;
   XSolvable * const solvable;
+  %newobject othersolvable;
   XSolvable * const othersolvable;
+  %newobject dep;
+  Dep * const dep;
   %{
     SWIGINTERN XSolvable *Ruleinfo_solvable_get(Ruleinfo *ri) {
       return new_XSolvable(ri->solv->pool, ri->source);
@@ -2782,9 +3077,12 @@ rb_eval_string(
     SWIGINTERN XSolvable *Ruleinfo_othersolvable_get(Ruleinfo *ri) {
       return new_XSolvable(ri->solv->pool, ri->target);
     }
+    SWIGINTERN Dep *Ruleinfo_dep_get(Ruleinfo *ri) {
+      return new_Dep(ri->solv->pool, ri->dep_id);
+    }
   %}
   const char *problemstr() {
-    return solver_problemruleinfo2str($self->solv, $self->type, $self->source, $self->target, $self->dep);
+    return solver_problemruleinfo2str($self->solv, $self->type, $self->source, $self->target, $self->dep_id);
   }
 }
 
@@ -2837,10 +3135,12 @@ rb_eval_string(
     repodata_internalize(repo_id2repodata($self->repo, $self->id));
   }
   void create_stubs() {
-    repodata_create_stubs(repo_id2repodata($self->repo, $self->id));
+    Repodata *data = repo_id2repodata($self->repo, $self->id);
+    data = repodata_create_stubs(data);
+    $self->id = data->repodataid;
   }
-  void write(FILE *fp) {
-    repodata_write(repo_id2repodata($self->repo, $self->id), fp);
+  bool write(FILE *fp) {
+    return repodata_write(repo_id2repodata($self->repo, $self->id), fp) == 0;
   }
   bool add_solv(FILE *fp, int flags = 0) {
     Repodata *data = repo_id2repodata($self->repo, $self->id);
@@ -2869,3 +3169,24 @@ rb_eval_string(
   }
 }
 
+#ifdef ENABLE_PUBKEY
+%extend Solvsig {
+  Solvsig(FILE *fp) {
+    return solvsig_create(fp);
+  }
+  ~Solvsig() {
+    solvsig_free($self);
+  }
+  %newobject Chksum;
+  Chksum *Chksum() {
+    return $self->htype ? (Chksum *)solv_chksum_create($self->htype) : 0;
+  }
+#ifdef ENABLE_PGPVRFY
+  %newobject verify;
+  XSolvable *verify(Repo *repo, Chksum *chksum) {
+    Id p = solvsig_verify($self, repo, chksum);
+    return new_XSolvable(repo->pool, p);
+  }
+#endif
+}
+#endif

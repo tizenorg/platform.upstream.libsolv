@@ -7,13 +7,17 @@
 
 /*
  * queue.h
- * 
+ *
  */
 
 #ifndef LIBSOLV_QUEUE_H
 #define LIBSOLV_QUEUE_H
 
 #include "pooltypes.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef struct _Queue {
   Id *elements;		/* pointer to elements */
@@ -110,10 +114,14 @@ extern void queue_free(Queue *q);
 
 extern void queue_insert(Queue *q, int pos, Id id);
 extern void queue_insert2(Queue *q, int pos, Id id1, Id id2);
-extern void queue_insertn(Queue *q, int pos, int n);
+extern void queue_insertn(Queue *q, int pos, int n, Id *elements);
 extern void queue_delete(Queue *q, int pos);
 extern void queue_delete2(Queue *q, int pos);
 extern void queue_deleten(Queue *q, int pos, int n);
 extern void queue_prealloc(Queue *q, int n);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBSOLV_QUEUE_H */

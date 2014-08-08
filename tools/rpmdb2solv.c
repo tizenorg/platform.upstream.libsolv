@@ -25,17 +25,26 @@
 #include "pool.h"
 #include "repo.h"
 #include "repo_rpmdb.h"
+#ifdef ENABLE_PUBKEY
+#include "repo_pubkey.h"
+#endif
 #include "repo_products.h"
 #include "repo_solv.h"
 #include "common_write.h"
+#ifdef ENABLE_APPDATA
+#include "repo_appdata.h"
+#endif
+#ifdef SUSE
+#include "repo_autopattern.h"
+#endif
+
 
 static void
 usage(int status)
 {
   fprintf(stderr, "\nUsage:\n"
-	  "rpmdb2solv [-n] [-x] [-b <basefile>] [-p <productsdir>] [-r <root>]\n"
+	  "rpmdb2solv [-n] [-b <basefile>] [-p <productsdir>] [-r <root>]\n"
 	  " -n : No packages, do not read rpmdb, useful to only parse products\n"
-	  " -x : use extrapool\n"
 	  " -b <basefile> : Write .solv to <basefile>.solv instead of stdout\n"
 	  " -p <productsdir> : Scan <productsdir> for .prod files, representing installed products\n"
 	  " -r <root> : Prefix rpmdb path and <productsdir> with <root>\n"
@@ -48,11 +57,11 @@ usage(int status)
 int
 main(int argc, char **argv)
 {
+  FILE *reffp = 0;
   Pool *pool = pool_create();
-  Repo *repo, *ref = 0;
+  Repo *repo;
   Repodata *data;
   int c, percent = 0;
-  int extrapool = 0;
   int nopacks = 0;
   const char *root = 0;
   const char *basefile = 0;
@@ -61,12 +70,21 @@ main(int argc, char **argv)
   char *proddir = 0;
 #endif
   char *outfile = 0;
+#ifdef ENABLE_PUBKEY
+  int pubkeys = 0;
+#endif
+#ifdef ENABLE_APPDATA
+  int add_appdata = 0;
+#endif
+#ifdef SUSE
+  int add_auto = 0;
+#endif
 
   /*
    * parse arguments
    */
   
-  while ((c = getopt(argc, argv, "Phnxb:r:p:o:")) >= 0)
+  while ((c = getopt(argc, argv, "APhnkxXb:r:p:o:")) >= 0)
     switch (c)
       {
       case 'h':
@@ -90,11 +108,26 @@ main(int argc, char **argv)
 #endif
 	break;
       case 'x':
-        extrapool = 1;
-        break;
+        break;	/* extrapool no longer supported */
+      case 'X':
+#ifdef SUSE
+	add_auto = 1;
+#endif
+	break;
+      case 'A':
+#ifdef ENABLE_APPDATA
+	add_appdata = 1;
+#endif
+	break;
       case 'o':
         outfile = optarg;
         break;
+#ifdef ENABLE_PUBKEY
+      case 'k':
+        nopacks = 1;
+        pubkeys = 1;
+        break;
+#endif
       default:
 	usage(1);
       }
@@ -115,28 +148,8 @@ main(int argc, char **argv)
 
   if (refname && !nopacks)
     {
-      FILE *fp;
-      if ((fp = fopen(refname, "r")) == NULL)
-        {
-          perror(refname);
-        }
-      else
-	{
-	  Pool *refpool = extrapool ? pool_create() : 0;
-	  ref = repo_create(refpool ? refpool : pool, "ref");
-	  if (repo_add_solv(ref, fp, 0) != 0)
-	    {
-	      fprintf(stderr, "%s: %s\n", refname, pool_errstr(ref->pool));
-	      if (ref->pool != pool)
-		pool_free(ref->pool);
-	      else
-		repo_free(ref, 1);
-	      ref = 0;
-	    }
-	  else
-	    repo_disable_paging(ref);
-	  fclose(fp);
-	}
+      if ((reffp = fopen(refname, "r")) == NULL)
+        perror(refname);
     }
 
   /*
@@ -154,12 +167,22 @@ main(int argc, char **argv)
 
   if (!nopacks)
     {
-      if (repo_add_rpmdb(repo, ref, REPO_USE_ROOTDIR | REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | (percent ? RPMDB_REPORT_PROGRESS : 0)))
+      if (repo_add_rpmdb_reffp(repo, reffp, REPO_USE_ROOTDIR | REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | (percent ? RPMDB_REPORT_PROGRESS : 0)))
 	{
 	  fprintf(stderr, "rpmdb2solv: %s\n", pool_errstr(pool));
 	  exit(1);
 	}
     }
+#ifdef ENABLE_PUBKEY
+  if (pubkeys)
+    {
+      if (repo_add_rpmdb_pubkeys(repo, REPO_USE_ROOTDIR | REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE | ADD_WITH_KEYSIGNATURES))
+	{
+	  fprintf(stderr, "rpmdb2solv: %s\n", pool_errstr(pool));
+	  exit(1);
+	}
+    }
+#endif
 
 #ifdef ENABLE_SUSEREPO
   if (proddir && *proddir)
@@ -181,16 +204,20 @@ main(int argc, char **argv)
 	}
     }
 #endif
+
+#ifdef ENABLE_APPDATA
+  if (add_appdata)
+    repo_add_appdata_dir(repo, "/usr/share/appdata", REPO_USE_ROOTDIR | REPO_REUSE_REPODATA | REPO_NO_INTERNALIZE);
+#endif
   repodata_internalize(data);
 
-  if (ref)
-    {
-      if (ref->pool != pool)
-	pool_free(ref->pool);
-      else
-	repo_free(ref, 1);
-      ref = 0;
-    }
+  if (reffp)
+    fclose(reffp);
+
+#ifdef SUSE
+  if (add_auto)
+    repo_add_autopattern(repo, ADD_NO_AUTOPRODUCTS);
+#endif
 
   tool_write(repo, basefile, 0);
   pool_free(pool);

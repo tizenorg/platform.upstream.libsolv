@@ -13,10 +13,6 @@
 #ifndef LIBSOLV_SOLVER_H
 #define LIBSOLV_SOLVER_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "pooltypes.h"
 #include "pool.h"
 #include "repo.h"
@@ -26,6 +22,9 @@ extern "C" {
 #include "rules.h"
 #include "problems.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct _Solver {
   Pool *pool;				/* back pointer to pool */
@@ -38,7 +37,7 @@ struct _Solver {
 
 #ifdef LIBSOLV_INTERNAL
   Repo *installed;			/* copy of pool->installed */
-  
+
   /* list of rules, ordered
    * rpm rules first, then features, updates, jobs, learnt
    * see start/end offsets below
@@ -49,15 +48,15 @@ struct _Solver {
   Queue ruleassertions;			/* Queue of all assertion rules */
 
   /* start/end offset for rule 'areas' */
-    
+
   Id rpmrules_end;                      /* [Offset] rpm rules end */
-    
+
   Id featurerules;			/* feature rules start/end */
   Id featurerules_end;
-    
+
   Id updaterules;			/* policy rules, e.g. keep packages installed or update. All literals > 0 */
   Id updaterules_end;
-    
+
   Id jobrules;				/* user rules */
   Id jobrules_end;
 
@@ -66,10 +65,14 @@ struct _Solver {
 
   Id duprules;				/* dist upgrade rules */
   Id duprules_end;
-    
+
   Id bestrules;				/* rules from SOLVER_FORCEBEST */
   Id bestrules_end;
   Id *bestrules_pkg;
+
+  Id yumobsrules;			/* rules from yum obsoletes handling */
+  Id yumobsrules_end;
+  Id *yumobsrules_info;			/* the dependency for each rule */
 
   Id choicerules;			/* choice rules (always weak) */
   Id choicerules_end;
@@ -79,7 +82,7 @@ struct _Solver {
 
   Map noupdate;				/* don't try to update these
                                            installed solvables */
-  Map noobsoletes;			/* ignore obsoletes for these (multiinstall) */
+  Map multiversion;			/* ignore obsoletes for these (multiinstall) */
 
   Map updatemap;			/* bring these installed packages to the newest version */
   int updatemap_all;			/* bring all packages to the newest version */
@@ -110,6 +113,7 @@ struct _Solver {
 					 * > 0: level of decision when installed,
 					 * < 0: level of decision when conflict */
 
+  int decisioncnt_jobs;
   int decisioncnt_update;
   int decisioncnt_keep;
   int decisioncnt_resolve;
@@ -134,10 +138,12 @@ struct _Solver {
   Map recommendsmap;			/* recommended packages from decisionmap */
   Map suggestsmap;			/* suggested packages from decisionmap */
   int recommends_index;			/* recommendsmap/suggestsmap is created up to this level */
+  Queue *recommendscplxq;
+  Queue *suggestscplxq;
 
   Id *obsoletes;			/* obsoletes for each installed solvable */
   Id *obsoletes_data;			/* data area for obsoletes */
-  Id *multiversionupdaters;		/* updaters for multiversion packages in updatesystem mode */
+  Id *specialupdaters;			/* updaters for packages with a limited update rule */
 
   /*-------------------------------------------------------------------------------------------------------------
    * Solver configuration
@@ -153,13 +159,14 @@ struct _Solver {
   int dontinstallrecommended;		/* true: do not install recommended packages */
   int addalreadyrecommended;		/* true: also install recommended packages that were already recommended by the installed packages */
   int dontshowinstalledrecommended;	/* true: do not show recommended packages that are already installed */
-  
+
   int noinfarchcheck;			/* true: do not forbid inferior architectures */
   int keepexplicitobsoletes;		/* true: honor obsoletes during multiinstall */
   int bestobeypolicy;			/* true: stay in policy with the best rules */
   int noautotarget;			/* true: do not assume targeted for up/dup jobs that contain no installed solvable */
+  int focus_installed;			/* true: resolve update rules first */
+  int do_yum_obsoletes;			/* true: add special yumobs rules */
 
-    
   Map dupmap;				/* dup these packages*/
   int dupmap_all;			/* dup all packages */
   Map dupinvolvedmap;			/* packages involved in dup process */
@@ -183,6 +190,10 @@ struct _Solver {
   Queue *installsuppdepq;		/* deps from the install namespace provides hack */
 
   Queue addedmap_deduceq;		/* deduce addedmap from rpm rules */
+  Id *instbuddy;			/* buddies of installed packages */
+  int keep_orphans;			/* how to treat orphans */
+  int break_orphans;			/* how to treat orphans */
+  Queue *brokenorphanrules;		/* broken rules of orphaned packages */
 #endif	/* LIBSOLV_INTERNAL */
 };
 
@@ -206,7 +217,7 @@ typedef struct _Solver Solver;
 #define SOLVER_ERASE         		0x0200
 #define SOLVER_UPDATE			0x0300
 #define SOLVER_WEAKENDEPS      		0x0400
-#define SOLVER_NOOBSOLETES   		0x0500
+#define SOLVER_MULTIVERSION		0x0500
 #define SOLVER_LOCK			0x0600
 #define SOLVER_DISTUPGRADE		0x0700
 #define SOLVER_VERIFY			0x0800
@@ -232,6 +243,9 @@ typedef struct _Solver Solver;
  * contain an "installed" package unless the
  * NO_AUTOTARGET solver flag is set */
 #define SOLVER_TARGETED			0x200000
+/* This (SOLVER_INSTALL) job was automatically added
+ * and thus does not the add to the userinstalled packages */
+#define SOLVER_NOTBYUSER		0x400000
 
 #define SOLVER_SETEV			0x01000000
 #define SOLVER_SETEVR			0x02000000
@@ -242,6 +256,9 @@ typedef struct _Solver Solver;
 #define SOLVER_SETNAME			0x40000000
 
 #define SOLVER_SETMASK			0x7f000000
+
+/* legacy */
+#define SOLVER_NOOBSOLETES 		SOLVER_MULTIVERSION
 
 #define SOLVER_REASON_UNRELATED		0
 #define SOLVER_REASON_UNIT_RULE		1
@@ -270,6 +287,17 @@ typedef struct _Solver Solver;
 #define SOLVER_FLAG_KEEP_EXPLICIT_OBSOLETES	11
 #define SOLVER_FLAG_BEST_OBEY_POLICY		12
 #define SOLVER_FLAG_NO_AUTOTARGET		13
+#define SOLVER_FLAG_DUP_ALLOW_DOWNGRADE		14
+#define SOLVER_FLAG_DUP_ALLOW_ARCHCHANGE	15
+#define SOLVER_FLAG_DUP_ALLOW_VENDORCHANGE	16
+#define SOLVER_FLAG_DUP_ALLOW_NAMECHANGE	17
+#define SOLVER_FLAG_KEEP_ORPHANS		18
+#define SOLVER_FLAG_BREAK_ORPHANS		19
+#define SOLVER_FLAG_FOCUS_INSTALLED		20
+#define SOLVER_FLAG_YUM_OBSOLETES		21
+
+#define GET_USERINSTALLED_NAMES			(1 << 0)	/* package names instead if ids */
+#define GET_USERINSTALLED_INVERTED		(1 << 1)	/* autoinstalled */
 
 extern Solver *solver_create(Pool *pool);
 extern void solver_free(Solver *solv);
@@ -286,23 +314,26 @@ extern void solver_get_decisionblock(Solver *solv, int level, Queue *decisionq);
 extern void solver_get_orphaned(Solver *solv, Queue *orphanedq);
 extern void solver_get_recommendations(Solver *solv, Queue *recommendationsq, Queue *suggestionsq, int noselected);
 extern void solver_get_unneeded(Solver *solv, Queue *unneededq, int filtered);
+extern void solver_get_userinstalled(Solver *solv, Queue *q, int flags);
+extern void pool_add_userinstalled_jobs(Pool *pool, Queue *q, Queue *job, int flags);
 
 extern int  solver_describe_decision(Solver *solv, Id p, Id *infop);
 extern void solver_describe_weakdep_decision(Solver *solv, Id p, Queue *whyq);
 
 
-extern void solver_calculate_noobsmap(Pool *pool, Queue *job, Map *noobsmap);
+extern void solver_calculate_multiversionmap(Pool *pool, Queue *job, Map *multiversionmap);
+extern void solver_calculate_noobsmap(Pool *pool, Queue *job, Map *multiversionmap);	/* obsolete */
 extern void solver_create_state_maps(Solver *solv, Map *installedmap, Map *conflictsmap);
 
-/* XXX: why is this not static? */
-Id *solver_create_decisions_obsoletesmap(Solver *solv);
+extern void solver_calc_duchanges(Solver *solv, DUChanges *mps, int nmps);
+extern int solver_calc_installsizechange(Solver *solv);
+extern void solver_trivial_installable(Solver *solv, Queue *pkgs, Queue *res);
 
-void solver_calc_duchanges(Solver *solv, DUChanges *mps, int nmps);
-int solver_calc_installsizechange(Solver *solv);
-void solver_trivial_installable(Solver *solv, Queue *pkgs, Queue *res);
+extern void pool_job2solvables(Pool *pool, Queue *pkgs, Id how, Id what);
+extern int  pool_isemptyupdatejob(Pool *pool, Id how, Id what);
 
-void pool_job2solvables(Pool *pool, Queue *pkgs, Id how, Id what);
-int  pool_isemptyupdatejob(Pool *pool, Id how, Id what);
+extern const char *solver_select2str(Pool *pool, Id select, Id what);
+extern const char *pool_job2str(Pool *pool, Id how, Id what, Id flagmask);
 
 /* iterate over all literals of a rule */
 #define FOR_RULELITERALS(l, pp, r)				\

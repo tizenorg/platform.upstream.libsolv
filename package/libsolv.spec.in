@@ -27,6 +27,7 @@ BuildRoot:      %{_tmppath}/%{name}-%{version}-build
 %bcond_without perl_binding
 %bcond_without python_binding
 %bcond_without ruby_binding
+%bcond_with zypp
 
 %if 0%{?mandriva_version}
 # force this version on mandriva
@@ -98,6 +99,7 @@ Requires:       libsolv-tools = %version
 Requires:       libsolv@LIBSOLV_SOVERSION@ = %version
 %endif
 Requires:       rpm-devel
+Conflicts:      libsatsolver-devel
 
 %description devel
 Development files for libsolv, a new approach to package dependency solving
@@ -107,6 +109,7 @@ Summary:        A new approach to package dependency solving
 Group:          Development/Libraries/C and C++
 Obsoletes:      satsolver-tools < 0.18
 Provides:       satsolver-tools = 0.18
+Conflicts:      satsolver-tools-obsolete
 Requires:       gzip bzip2 coreutils findutils
 
 %description tools
@@ -122,6 +125,7 @@ Requires:       gnupg2
 %if 0%{?suse_version}
 Requires:       gpg2
 %endif
+Conflicts:      libsatsolver-demo
 
 %description demo
 Applications demoing the libsolv library.
@@ -134,7 +138,7 @@ Group:          Development/Languages/Ruby
 Ruby bindings for sat solver.
 
 %package -n python-solv
-%if 0%{?py_requires:1}
+%if 0%{?py_requires:1} && %{with python_binding}
 %py_requires
 %endif
 Summary:        Python bindings for the libsolv library
@@ -163,7 +167,7 @@ CMAKE_FLAGS=
 CMAKE_FLAGS="-DFEDORA=1"
 %endif
 %if 0%{?suse_version}
-CMAKE_FLAGS="-DSUSE=1"
+CMAKE_FLAGS="-DSUSE=1 -DENABLE_APPDATA=1"
 %endif
 
 cmake   $CMAKE_FLAGS \
@@ -176,6 +180,7 @@ cmake   $CMAKE_FLAGS \
 	%{?with_perl_binding:-DENABLE_PERL=1} \
 	%{?with_python_binding:-DENABLE_PYTHON=1} \
 	%{?with_ruby_binding:-DENABLE_RUBY=1} \
+	%{?with_zypp:-DENABLE_SUSEREPO=1 -DENABLE_HELIXREPO=1} \
 	-DUSE_VENDORDIRS=1 \
 	-DCMAKE_SKIP_RPATH=1
 make %{?jobs:-j %jobs}
@@ -190,8 +195,10 @@ python -O %py_libdir/py_compile.py *.py
 popd
 %endif
 %endif
+%if %{with disable_shared}
 # we want to leave the .a file untouched
 export NO_BRP_STRIP_DEBUG=true
+%endif
 
 %clean
 rm -rf "$RPM_BUILD_ROOT"
@@ -231,6 +238,7 @@ rm -rf "$RPM_BUILD_ROOT"
 %{_bindir}/helix2solv
 %endif
 %{_datadir}/cmake/Modules/*
+%{_mandir}/man?/*
 
 %files demo
 %defattr(-,root,root)

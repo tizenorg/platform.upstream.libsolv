@@ -115,13 +115,12 @@ solv_timems(unsigned int subtract)
 
    see also: http://sources.redhat.com/ml/libc-alpha/2008-12/msg00003.html
  */
-#if defined(__GLIBC__)
+#if defined(__GLIBC__) && (defined(HAVE_QSORT_R) || defined(HAVE___QSORT_R))
 
-# if HAVE_QSORT_R || HAVE___QSORT_R
 void
 solv_sort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *, void *), void *compard)
 {
-# if HAVE_QSORT_R
+# if defined(HAVE_QSORT_R)
   qsort_r(base, nmemb, size, compar, compard);
 # else
   /* backported for SLE10-SP2 */
@@ -129,12 +128,8 @@ solv_sort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, con
 # endif
 
 }
-#else /* qsort_r or __qsort_r on glibc */
-/* use own version of qsort if none available */
-#include "qsort_r.c"
-#endif
 
-#else /* not glibc */
+#elif defined(HAVE_QSORT_R) /* not glibc, but has qsort_r() */
 
 struct solv_sort_data {
   int (*compar)(const void *, const void *, void *);
@@ -157,6 +152,9 @@ solv_sort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, con
   qsort_r(base, nmemb, size, &d, solv_sort_helper);
 }
 
+#else /* not glibc and no qsort_r() */
+/* use own version of qsort if none available */
+#include "qsort_r.c"
 #endif
 
 char *
@@ -245,4 +243,156 @@ solv_bin2hex(const unsigned char *buf, int l, char *str)
   return str;
 }
 
+size_t
+solv_validutf8(const char *buf)
+{
+  const unsigned char *p;
+  int x;
+
+  for (p = (const unsigned char *)buf; (x = *p) != 0; p++)
+    {
+      if (x < 0x80)
+	continue;
+      if (x < 0xc0)
+	break;
+      if (x < 0xe0)
+	{
+	  /* one byte to follow */
+	  if ((p[1] & 0xc0) != 0x80)
+	    break;
+	  if ((x & 0x1e) == 0)
+	    break;	/* not minimal */
+	  p += 1;
+	  continue;
+	}
+      if (x < 0xf0)
+	{
+	  /* two bytes to follow */
+	  if ((p[1] & 0xc0) != 0x80 || (p[2] & 0xc0) != 0x80)
+	    break;
+	  if ((x & 0x0f) == 0 && (p[1] & 0x20) == 0)
+	    break;	/* not minimal */
+	  if (x == 0xed && (p[1] & 0x20) != 0)
+	    break;	/* d800-dfff surrogate */
+	  if (x == 0xef && p[1] == 0xbf && (p[2] == 0xbe || p[2] == 0xbf))
+	    break;	/* fffe or ffff */
+	  p += 2;
+	  continue;
+	}
+      if (x < 0xf8)
+	{
+	  /* three bytes to follow */
+	  if ((p[1] & 0xc0) != 0x80 || (p[2] & 0xc0) != 0x80 || (p[3] & 0xc0) != 0x80)
+	    break;
+	  if ((x & 0x07) == 0 && (p[1] & 0x30) == 0)
+	    break;	/* not minimal */
+	  if ((x & 0x07) > 4 || ((x & 0x07) == 4 && (p[1] & 0x30) != 0))
+	    break;	/* above 0x10ffff */
+	  p += 3;
+	  continue;
+	}
+      break;	/* maybe valid utf8, but above 0x10ffff */
+    }
+  return (const char *)p - buf;
+}
+
+char *
+solv_latin1toutf8(const char *buf)
+{
+  int l = 1;
+  const char *p;
+  char *r, *rp;
+
+  for (p = buf; *p; p++)
+    if ((*(const unsigned char *)p & 128) != 0)
+      l++;
+  r = rp = solv_malloc(p - buf + l);
+  for (p = buf; *p; p++)
+    {
+      if ((*(const unsigned char *)p & 128) != 0)
+	{
+	  *rp++ = *(const unsigned char *)p & 64 ? 0xc3 : 0xc2;
+	  *rp++ = *p & 0xbf;
+	}
+      else
+        *rp++ = *p;
+    }
+  *rp = 0;
+  return r;
+}
+
+char *
+solv_replacebadutf8(const char *buf, int replchar)
+{
+  size_t l, nl;
+  const char *p;
+  char *r = 0, *rp = 0;
+  int repllen, replin;
+
+  if (replchar < 0 || replchar > 0x10ffff)
+    replchar = 0xfffd;
+  if (!replchar)
+    repllen = replin = 0;
+  else if (replchar < 0x80)
+    {
+      repllen = 1;
+      replin = (replchar & 0x40) | 0x80;
+    }
+  else if (replchar < 0x800)
+    {
+      repllen = 2;
+      replin = 0x40;
+    }
+  else if (replchar < 0x10000)
+    {
+      repllen = 3;
+      replin = 0x60;
+    }
+  else
+    {
+      repllen = 4;
+      replin = 0x70;
+    }
+  for (;;)
+    {
+      for (p = buf, nl = 0; *p; )
+	{
+	  l = solv_validutf8(p);
+	  if (rp && l)
+	    {
+	      memcpy(rp, p, l);
+	      rp += l;
+	    }
+	  nl += l;
+	  p += l;
+	  if (!*p)
+	    break;
+	  /* found a bad char, replace with replchar */
+	  if (rp && replchar)
+	    {
+	      switch (repllen)
+		{
+		case 4:
+		  *rp++ = (replchar >> 18 & 0x3f) | 0x80;
+		case 3:
+		  *rp++ = (replchar >> 12 & 0x3f) | 0x80;
+		case 2:
+		  *rp++ = (replchar >> 6  & 0x3f) | 0x80;
+		default:
+		  *rp++ = (replchar       & 0x3f) | 0x80;
+		}
+	      rp[-repllen] ^= replin;
+	    }
+	  nl += repllen;
+	  p++;
+	  while ((*(const unsigned char *)p & 0xc0) == 0x80)
+	    p++;
+	}
+      if (rp)
+	break;
+      r = rp = solv_malloc(nl + 1);
+    }
+  *rp = 0;
+  return r;
+}
 

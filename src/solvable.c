@@ -23,6 +23,7 @@
 #include "policy.h"
 #include "poolvendor.h"
 #include "chksum.h"
+#include "linkedpkg.h"
 
 const char *
 pool_solvable2str(Pool *pool, Solvable *s)
@@ -46,10 +47,17 @@ pool_solvable2str(Pool *pool, Solvable *s)
     }
   p = pool_alloctmpspace(pool, nl + el + al + 3);
   strcpy(p, n);
-  p[nl] = '-';
-  strncpy(p + nl + 1, e, el);
-  p[nl + 1 + el] = '.';
-  strcpy(p + nl + 1 + el + 1, a);
+  if (el)
+    {
+      p[nl++] = '-';
+      strncpy(p + nl, e, el);
+      p[nl + el] = 0;
+    }
+  if (al)
+    {
+      p[nl + el] = pool->disttype == DISTTYPE_HAIKU ? '-' : '.';
+      strcpy(p + nl + el + 1, a);
+    }
   return p;
 }
 
@@ -91,12 +99,36 @@ solvable_lookup_deparray(Solvable *s, Id keyname, Queue *q, Id marker)
   return repo_lookup_deparray(s->repo, s - s->repo->pool->solvables, keyname, q, marker);
 }
 
+static const char *
+solvable_lookup_str_joinarray(Solvable *s, Id keyname, const char *joinstr)
+{
+  Queue q;
+  Id qbuf[10];
+  char *str = 0;
+
+  queue_init_buffer(&q, qbuf, sizeof(qbuf)/sizeof(*qbuf));
+  if (solvable_lookup_idarray(s, keyname, &q) && q.count)
+    {
+      Pool *pool = s->repo->pool;
+      int i;
+      str = pool_tmpjoin(pool, pool_id2str(pool, q.elements[0]), 0, 0);
+      for (i = 1; i < q.count; i++)
+	str = pool_tmpappend(pool, str, joinstr, pool_id2str(pool, q.elements[i]));
+    }
+  queue_free(&q);
+  return str;
+}
+
 const char *
 solvable_lookup_str(Solvable *s, Id keyname)
 {
+  const char *str;
   if (!s->repo)
     return 0;
-  return repo_lookup_str(s->repo, s - s->repo->pool->solvables, keyname);
+  str = repo_lookup_str(s->repo, s - s->repo->pool->solvables, keyname);
+  if (!str && (keyname == SOLVABLE_LICENSE || keyname == SOLVABLE_GROUP))
+    str = solvable_lookup_str_joinarray(s, keyname, ", ");
+  return str;
 }
 
 static const char *
@@ -104,7 +136,7 @@ solvable_lookup_str_base(Solvable *s, Id keyname, Id basekeyname, int usebase)
 {
   Pool *pool;
   const char *str, *basestr;
-  Id p, pp;
+  Id p, pp, name;
   Solvable *s2;
   int pass;
 
@@ -121,13 +153,14 @@ solvable_lookup_str_base(Solvable *s, Id keyname, Id basekeyname, int usebase)
    * translation */
   if (!pool->whatprovides)
     return usebase ? basestr : 0;
+  name = s->name;
   /* we do this in two passes, first same vendor, then all other vendors */
   for (pass = 0; pass < 2; pass++)
     {
-      FOR_PROVIDES(p, pp, s->name)
+      FOR_PROVIDES(p, pp, name)
 	{
 	  s2 = pool->solvables + p;
-	  if (s2->name != s->name)
+	  if (s2->name != name)
 	    continue;
 	  if ((s->vendor == s2->vendor) != (pass == 0))
 	    continue;
@@ -138,6 +171,20 @@ solvable_lookup_str_base(Solvable *s, Id keyname, Id basekeyname, int usebase)
 	  if (str)
 	    return str;
 	}
+#ifdef ENABLE_LINKED_PKGS
+      /* autopattern/product translation magic */
+      if (pass)
+	{
+	  const char *n = pool_id2str(pool, name);
+	  if (*n == 'p')
+	    {
+	      if (!strncmp("pattern:", n, 8) && (name = find_autopattern_name(pool, s)) != 0)
+		pass = -1;
+	      if (!strncmp("product:", n, 8) && (name = find_autoproduct_name(pool, s)) != 0)
+		pass = -1;
+	    }
+	}
+#endif
     }
   return usebase ? basestr : 0;
 }
@@ -355,7 +402,7 @@ solvable_lookup_sourcepkg(Solvable *s)
       str = pool_tmpappend(pool, str, ".", pool_id2str(pool, archid));
       return pool_tmpappend(pool, str, ".rpm", 0);
     }
-  else 
+  else
     return name;	/* FIXME */
 }
 
@@ -366,20 +413,20 @@ static inline Id dep2name(Pool *pool, Id dep)
 {
   while (ISRELDEP(dep))
     {
-      Reldep *rd = rd = GETRELDEP(pool, dep);
+      Reldep *rd = GETRELDEP(pool, dep);
       dep = rd->name;
     }
   return dep;
 }
 
-static int providedbyinstalled_multiversion(Pool *pool, Map *installed, Id n, Id con) 
+static int providedbyinstalled_multiversion(Pool *pool, Map *installed, Id n, Id con)
 {
   Id p, pp;
-  Solvable *sn = pool->solvables + n; 
+  Solvable *sn = pool->solvables + n;
 
   FOR_PROVIDES(p, pp, sn->name)
-    {    
-      Solvable *s = pool->solvables + p; 
+    {
+      Solvable *s = pool->solvables + p;
       if (s->name != sn->name || s->arch != sn->arch)
         continue;
       if (!MAPTST(installed, p))
@@ -387,11 +434,11 @@ static int providedbyinstalled_multiversion(Pool *pool, Map *installed, Id n, Id
       if (pool_match_nevr(pool, pool->solvables + p, con))
         continue;
       return 1;         /* found installed package that doesn't conflict */
-    }    
+    }
   return 0;
 }
 
-static inline int providedbyinstalled(Pool *pool, Map *installed, Id dep, int ispatch, Map *noobsoletesmap)
+static inline int providedbyinstalled(Pool *pool, Map *installed, Id dep, int ispatch, Map *multiversionmap)
 {
   Id p, pp;
   FOR_PROVIDES(p, pp, dep)
@@ -400,7 +447,7 @@ static inline int providedbyinstalled(Pool *pool, Map *installed, Id dep, int is
 	return -1;
       if (ispatch && !pool_match_nevr(pool, pool->solvables + p, dep))
 	continue;
-      if (ispatch && noobsoletesmap && noobsoletesmap->size && MAPTST(noobsoletesmap, p) && ISRELDEP(dep))
+      if (ispatch && multiversionmap && multiversionmap->size && MAPTST(multiversionmap, p) && ISRELDEP(dep))
 	if (providedbyinstalled_multiversion(pool, installed, p, dep))
 	  continue;
       if (MAPTST(installed, p))
@@ -426,7 +473,7 @@ static inline int providedbyinstalled(Pool *pool, Map *installed, Id dep, int is
  * -1: solvable is installable, but doesn't constrain any installed packages
  */
 int
-solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsmap, Map *noobsoletesmap)
+solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsmap, Map *multiversionmap)
 {
   Pool *pool = s->repo->pool;
   Solvable *s2;
@@ -460,7 +507,7 @@ solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsm
       conp = s->repo->idarraydata + s->conflicts;
       while ((con = *conp++) != 0)
 	{
-	  if (providedbyinstalled(pool, installedmap, con, ispatch, noobsoletesmap))
+	  if (providedbyinstalled(pool, installedmap, con, ispatch, multiversionmap))
 	    {
 	      if (ispatch && solvable_is_irrelevant_patch(s, installedmap))
 		return -1;
@@ -469,7 +516,7 @@ solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsm
 	  if (!interesting && ISRELDEP(con))
 	    {
               con = dep2name(pool, con);
-	      if (providedbyinstalled(pool, installedmap, con, ispatch, noobsoletesmap))
+	      if (providedbyinstalled(pool, installedmap, con, ispatch, multiversionmap))
 		interesting = 1;
 	    }
 	}
@@ -533,7 +580,7 @@ solvable_trivial_installable_map(Solvable *s, Map *installedmap, Map *conflictsm
  * by a queue.
  */
 int
-solvable_trivial_installable_queue(Solvable *s, Queue *installed, Map *noobsoletesmap)
+solvable_trivial_installable_queue(Solvable *s, Queue *installed, Map *multiversionmap)
 {
   Pool *pool = s->repo->pool;
   int i;
@@ -548,7 +595,7 @@ solvable_trivial_installable_queue(Solvable *s, Queue *installed, Map *noobsolet
       if (p > 0)		/* makes it work with decisionq */
 	MAPSET(&installedmap, p);
     }
-  r = solvable_trivial_installable_map(s, &installedmap, 0, noobsoletesmap);
+  r = solvable_trivial_installable_map(s, &installedmap, 0, multiversionmap);
   map_free(&installedmap);
   return r;
 }
@@ -559,7 +606,7 @@ solvable_trivial_installable_queue(Solvable *s, Queue *installed, Map *noobsolet
  * by a repo containing the installed solvables.
  */
 int
-solvable_trivial_installable_repo(Solvable *s, Repo *installed, Map *noobsoletesmap)
+solvable_trivial_installable_repo(Solvable *s, Repo *installed, Map *multiversionmap)
 {
   Pool *pool = s->repo->pool;
   Id p;
@@ -570,7 +617,7 @@ solvable_trivial_installable_repo(Solvable *s, Repo *installed, Map *noobsoletes
   map_init(&installedmap, pool->nsolvables);
   FOR_REPO_SOLVABLES(installed, p, s2)
     MAPSET(&installedmap, p);
-  r = solvable_trivial_installable_map(s, &installedmap, 0, noobsoletesmap);
+  r = solvable_trivial_installable_map(s, &installedmap, 0, multiversionmap);
   map_free(&installedmap);
   return r;
 }
@@ -579,7 +626,7 @@ solvable_trivial_installable_repo(Solvable *s, Repo *installed, Map *noobsoletes
 static int
 pool_illegal_vendorchange(Pool *pool, Solvable *s1, Solvable *s2)
 {
-  Id v1, v2; 
+  Id v1, v2;
   Id vendormask1, vendormask2;
 
   if (pool->custom_vendorcheck)
@@ -587,7 +634,7 @@ pool_illegal_vendorchange(Pool *pool, Solvable *s1, Solvable *s2)
   /* treat a missing vendor as empty string */
   v1 = s1->vendor ? s1->vendor : ID_EMPTY;
   v2 = s2->vendor ? s2->vendor : ID_EMPTY;
-  if (v1 == v2) 
+  if (v1 == v2)
     return 0;
   vendormask1 = pool_vendor2mask(pool, v1);
   if (!vendormask1)
@@ -658,7 +705,7 @@ solvable_is_irrelevant_patch(Solvable *s, Map *installedmap)
 /*
  * Create maps containing the state of each solvable. Input is a "installed" queue,
  * it contains all solvable ids that are considered to be installed.
- * 
+ *
  * The created maps can be used for solvable_trivial_installable_map(),
  * pool_calc_duchanges(), pool_calc_installsizechange().
  *
@@ -698,22 +745,28 @@ pool_create_state_maps(Pool *pool, Queue *installed, Map *installedmap, Map *con
 /* Tests if two solvables have identical content. Currently
  * both solvables need to come from the same pool
  */
+
 int
 solvable_identical(Solvable *s1, Solvable *s2)
 {
   unsigned int bt1, bt2;
   Id rq1, rq2;
   Id *reqp;
-
   if (s1->name != s2->name)
     return 0;
   if (s1->arch != s2->arch)
     return 0;
   if (s1->evr != s2->evr)
     return 0;
-  /* map missing vendor to empty string */
+
+  /* check vendor, map missing vendor to empty string */
   if ((s1->vendor ? s1->vendor : 1) != (s2->vendor ? s2->vendor : 1))
-    return 0;
+    {
+      /* workaround for bug 881493 */
+      if (s1->repo && !strncmp(pool_id2str(s1->repo->pool, s1->name), "product:", 8))
+	return 1;
+      return 0;
+    }
 
   /* looking good, try some fancier stuff */
   /* might also look up the package checksum here */
@@ -726,6 +779,13 @@ solvable_identical(Solvable *s1, Solvable *s2)
     }
   else
     {
+      if (s1->repo)
+	{
+          /* workaround for bugs 881493 and 885830*/
+	  const char *n = pool_id2str(s1->repo->pool, s1->name);
+	  if (!strncmp(n, "product:", 8) || !strncmp(n, "application:", 12))
+	    return 1;
+	}
       /* look at requires in a last attempt to find recompiled packages */
       rq1 = rq2 = 0;
       if (s1->requires)
@@ -825,4 +885,21 @@ void
 solvable_unset(Solvable *s, Id keyname)
 {
   repo_unset(s->repo, s - s->repo->pool->solvables, keyname);
+}
+
+/* return true if a dependency intersects dep in the keyname array */
+int
+solvable_matchesdep(Solvable *s, Id keyname, Id dep, int marker)
+{
+  int i;
+  Pool *pool = s->repo->pool;
+  Queue q;
+  queue_init(&q);
+  solvable_lookup_deparray(s, keyname, &q, marker);
+  for (i = 0; i < q.count; i++)
+    if (pool_match_dep(pool, q.elements[i], dep))
+      break;
+  i = i == q.count ? 0 : 1;
+  queue_free(&q);
+  return i;
 }

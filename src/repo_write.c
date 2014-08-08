@@ -397,6 +397,7 @@ struct cbdata {
   Id lastlen;
 
   int doingsolvables;	/* working on solvables data */
+  int filelistmode;
 };
 
 #define NEEDED_BLOCK 1023
@@ -448,6 +449,19 @@ data_addideof(struct extdata *xd, Id sx, int eof)
     *dp++ = (x >> 6) | 128;
   *dp++ = eof ? (x & 63) : (x & 63) | 64;
   xd->len = dp - xd->buf;
+}
+
+static inline int
+data_addideof_len(Id sx)
+{
+  unsigned int x = (unsigned int)sx;
+  if (x >= (1 << 13))
+    {
+      if (x >= (1 << 27))
+	return 5;
+      return x >= (1 << 20) ? 4 : 3;
+    }
+  return x >= (1 << 6) ? 2 : 1;
 }
 
 static void
@@ -812,8 +826,17 @@ repo_write_adddata(struct cbdata *cbdata, Repodata *data, Repokey *key, KeyValue
       case REPOKEY_TYPE_SHA1:
 	data_addblob(xd, (unsigned char *)kv->str, SIZEOF_SHA1);
 	break;
+      case REPOKEY_TYPE_SHA224:
+	data_addblob(xd, (unsigned char *)kv->str, SIZEOF_SHA224);
+	break;
       case REPOKEY_TYPE_SHA256:
 	data_addblob(xd, (unsigned char *)kv->str, SIZEOF_SHA256);
+	break;
+      case REPOKEY_TYPE_SHA384:
+	data_addblob(xd, (unsigned char *)kv->str, SIZEOF_SHA384);
+	break;
+      case REPOKEY_TYPE_SHA512:
+	data_addblob(xd, (unsigned char *)kv->str, SIZEOF_SHA512);
 	break;
       case REPOKEY_TYPE_U32:
 	u32 = kv->num;
@@ -852,8 +875,15 @@ repo_write_adddata(struct cbdata *cbdata, Repodata *data, Repokey *key, KeyValue
 	if (cbdata->owndirpool)
 	  id = putinowndirpool(cbdata, data, &data->dirpool, id);
 	id = cbdata->dirused[id];
+	if (cbdata->filelistmode > 0)
+	  {
+	    xd->len += data_addideof_len(id) + strlen(kv->str) + 1;
+	    break;
+	  }
 	data_addideof(xd, id, kv->eof);
 	data_addblob(xd, (unsigned char *)kv->str, strlen(kv->str) + 1);
+	if (cbdata->filelistmode < 0)
+	  return 0;
 	break;
       case REPOKEY_TYPE_FIXARRAY:
 	if (kv->eof == 0)
@@ -1007,6 +1037,47 @@ repo_write_stdkeyfilter(Repo *repo, Repokey *key, void *kfdata)
 }
 
 /*
+ * return true if the repodata contains the filelist (and just
+ * the filelist). The same code is used in the dataiterator. The way
+ * it is used is completely wrong, of course, as having the filelist
+ * key does not mean it is used for a specific solvable. Nevertheless
+ * it is better to have it than to write broken solv files.
+ */
+static inline int
+is_filelist_extension(Repodata *data)
+{
+  int j;
+  for (j = 1; j < data->nkeys; j++)
+    if (data->keys[j].name != REPOSITORY_SOLVABLES && data->keys[j].name != SOLVABLE_FILELIST)
+      return 0;
+  return 1;
+}
+
+
+static int
+write_compressed_extdata(Repodata *target, struct extdata *xd, unsigned char *vpage, int lpage)
+{
+  unsigned char *dp = xd->buf;
+  int l = xd->len;
+  while (l)
+    {
+      int ll = REPOPAGE_BLOBSIZE - lpage;
+      if (l < ll)
+	ll = l;
+      memcpy(vpage + lpage, dp, ll);
+      dp += ll;
+      lpage += ll;
+      l -= ll;
+      if (lpage == REPOPAGE_BLOBSIZE)
+	{
+	  write_compressed_page(target, vpage, lpage);
+	  lpage = 0;
+	}
+    }
+  return lpage;
+}
+
+/*
  * Repo
  */
 
@@ -1025,7 +1096,7 @@ int
 repo_write_filtered(Repo *repo, FILE *fp, int (*keyfilter)(Repo *repo, Repokey *key, void *kfdata), void *kfdata, Queue *keyq)
 {
   Pool *pool = repo->pool;
-  int i, j, n;
+  int i, j, n, lastfilelistn;
   Solvable *s;
   NeedId *needid;
   int nstrings, nrels;
@@ -1127,6 +1198,7 @@ repo_write_filtered(Repo *repo, FILE *fp, int (*keyfilter)(Repo *repo, Repokey *
   dirpool = 0;
   dirpooldata = 0;
   n = ID_NUM_INTERNAL;
+  lastfilelistn = 0;
   FOR_REPODATAS(repo, i, data)
     {
       cbdata.keymapstart[i] = n;
@@ -1216,6 +1288,20 @@ repo_write_filtered(Repo *repo, FILE *fp, int (*keyfilter)(Repo *repo, Repokey *
 	    {
 	      idused = 1;	/* dirs also use ids */
 	      dirused = 1;
+	    }
+	  if (key->type == REPOKEY_TYPE_DIRSTRARRAY && key->name == SOLVABLE_FILELIST)
+	    {
+	      /* is this a file list extension */
+	      if (is_filelist_extension(data))
+		{
+		  /* hmm, we have a file list extension. Kill filelist of other repodata.
+		   * XXX: this is wrong, as the extension does not need to cover all
+		   * solvables of the other repodata */
+		  if (lastfilelistn)
+		    cbdata.keymap[lastfilelistn] = 0;
+		}
+	      else
+		lastfilelistn = n;
 	    }
 	}
       if (idused)
@@ -1690,6 +1776,19 @@ fprintf(stderr, "dir %d used %d\n", i, cbdata.dirused ? cbdata.dirused[i] : 1);
     {
       data_addid(xd, repo->nsolvables);	/* FLEXARRAY nentries */
       cbdata.doingsolvables = 1;
+
+      /* check if we can do the special filelist memory optimization */
+      if (anyrepodataused)
+	{
+	  for (i = 1; i < target.nkeys; i++)
+	    if (target.keys[i].storage == KEY_STORAGE_VERTICAL_OFFSET)
+	      cbdata.filelistmode |= cbdata.filelistmode == 0 && target.keys[i].type == REPOKEY_TYPE_DIRSTRARRAY ? 1 : 2;
+	    else if (target.keys[i].type == REPOKEY_TYPE_DIRSTRARRAY)
+	      cbdata.filelistmode = 2;
+	  if (cbdata.filelistmode != 1)
+	    cbdata.filelistmode = 0;
+	}
+
       for (i = repo->start, s = pool->solvables + i, n = 0; i < repo->end; i++, s++)
 	{
 	  if (s->repo != repo)
@@ -1877,31 +1976,46 @@ fprintf(stderr, "dir %d used %d\n", i, cbdata.dirused ? cbdata.dirused[i] : 1);
   if (i < target.nkeys)
     {
       /* yes, write it in pages */
-      unsigned char *dp, vpage[REPOPAGE_BLOBSIZE];
-      int l, ll, lpage = 0;
+      unsigned char vpage[REPOPAGE_BLOBSIZE];
+      int lpage = 0;
 
       write_u32(&target, REPOPAGE_BLOBSIZE);
       for (i = 1; i < target.nkeys; i++)
+	if (cbdata.extdata[i].len)
+	  {
+	    if (cbdata.filelistmode)
+	      break;
+	    lpage = write_compressed_extdata(&target, cbdata.extdata + i, vpage, lpage);
+	  }
+      if (cbdata.filelistmode && i < target.nkeys)
 	{
-	  if (!cbdata.extdata[i].len)
-	    continue;
-	  l = cbdata.extdata[i].len;
-	  dp = cbdata.extdata[i].buf;
-	  while (l)
+	  /* ok, just this single extdata, which is a filelist */
+	  xd = cbdata.extdata + i;
+	  xd->len = 0;
+	  cbdata.filelistmode = -1;
+	  for (j = 0; j < cbdata.nkeymap; j++)
+	    if (cbdata.keymap[j] != i)
+	      cbdata.keymap[j] = 0;
+	  for (i = repo->start, s = pool->solvables + i; i < repo->end; i++, s++)
 	    {
-	      ll = REPOPAGE_BLOBSIZE - lpage;
-	      if (l < ll)
-		ll = l;
-	      memcpy(vpage + lpage, dp, ll);
-	      dp += ll;
-	      lpage += ll;
-	      l -= ll;
-	      if (lpage == REPOPAGE_BLOBSIZE)
+	      if (s->repo != repo)
+		continue;
+	      FOR_REPODATAS(repo, j, data)
 		{
-		  write_compressed_page(&target, vpage, lpage);
-		  lpage = 0;
+		  if (!repodataused[j])
+		    continue;
+		  if (i < data->start || i >= data->end)
+		    continue;
+		  repodata_search(data, i, 0, SEARCH_SUB|SEARCH_ARRAYSENTINEL, repo_write_cb_adddata, &cbdata);
+		}
+	      if (xd->len > 1024 * 1024)
+		{
+		  lpage = write_compressed_extdata(&target, xd, vpage, lpage);
+		  xd->len = 0;
 		}
 	    }
+	  if (xd->len)
+	    lpage = write_compressed_extdata(&target, xd, vpage, lpage);
 	}
       if (lpage)
 	write_compressed_page(&target, vpage, lpage);

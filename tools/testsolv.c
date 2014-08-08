@@ -5,6 +5,7 @@
 #include "pool.h"
 #include "repo.h"
 #include "solver.h"
+#include "selection.h"
 #include "solverdebug.h"
 #include "testcase.h"
 
@@ -27,22 +28,58 @@ usage(ex)
   exit(ex);
 }
 
+struct reportsolutiondata {
+  int count;
+  char *result;
+};
+
+static int
+reportsolutioncb(Solver *solv, void *cbdata)
+{
+  struct reportsolutiondata *sd = cbdata;
+  char *res;
+
+  sd->count++;
+  res = testcase_solverresult(solv, TESTCASE_RESULT_TRANSACTION);
+  if (*res)
+    {
+      char prefix[64];
+      char *p2, *p = res;
+      sprintf(prefix, "callback%d:", sd->count);
+      while ((p2 = strchr(p, '\n')) != 0)
+	{
+	  char c = p2[1];
+	  p2[1] = 0;
+	  sd->result = solv_dupappend(sd->result, prefix, p);
+	  p2[1] = c;
+	  p = p2 + 1;
+	}
+    }
+  solv_free(res);
+  return 0;
+}
+
 int
 main(int argc, char **argv)
 {
   Pool *pool;
   Queue job;
+  Queue solq;
   Solver *solv;
   char *result = 0;
   int resultflags = 0;
   int debuglevel = 0;
   int writeresult = 0;
   int multijob = 0;
+  int rescallback = 0;
   int c;
   int ex = 0;
+  const char *list = 0;
   FILE *fp;
+  const char *p;
 
-  while ((c = getopt(argc, argv, "vrh")) >= 0)
+  queue_init(&solq);
+  while ((c = getopt(argc, argv, "vmrhl:s:")) >= 0)
     {
       switch (c)
       {
@@ -52,8 +89,20 @@ main(int argc, char **argv)
         case 'r':
           writeresult++;
           break;
+        case 'm':
+          rescallback = 1;
+          break;
         case 'h':
 	  usage(0);
+          break;
+        case 'l':
+	  list = optarg;
+          break;
+        case 's':
+	  if ((p = strchr(optarg, ':')))
+	    queue_push2(&solq, atoi(optarg), atoi(p + 1));
+	  else
+	    queue_push2(&solq, 1, atoi(optarg));
           break;
         default:
 	  usage(1);
@@ -73,7 +122,7 @@ main(int argc, char **argv)
 	  perror(argv[optind]);
 	  exit(0);
 	}
-      while(!feof(fp))
+      while (!feof(fp))
 	{
 	  queue_init(&job);
 	  result = 0;
@@ -90,13 +139,48 @@ main(int argc, char **argv)
 
 	  if (multijob)
 	    printf("test %d:\n", multijob++);
-	  if (result || writeresult)
+	  if (list)
+	    {
+	      int selflags = SELECTION_NAME|SELECTION_PROVIDES|SELECTION_CANON|SELECTION_DOTARCH|SELECTION_REL|SELECTION_GLOB|SELECTION_FLAT;
+	      if (*list == '/')
+		selflags |= SELECTION_FILELIST;
+	      queue_empty(&job);
+	      selection_make(pool, &job, list, selflags);
+	      if (!job.elements)
+		printf("No match\n");
+	      else
+		{
+		  Queue q;
+		  int i;
+		  queue_init(&q);
+		  selection_solvables(pool, &job, &q);
+		  for (i = 0; i < q.count; i++)
+		    printf("  - %s\n", testcase_solvid2str(pool, q.elements[i]));
+		  queue_free(&q);
+		}
+	    }
+	  else if (result || writeresult)
 	    {
 	      char *myresult, *resultdiff;
+	      struct reportsolutiondata reportsolutiondata;
+	      memset(&reportsolutiondata, 0, sizeof(reportsolutiondata));
+	      if (rescallback)
+		{
+		  solv->solution_callback = reportsolutioncb;
+		  solv->solution_callback_data = &reportsolutiondata;
+		}
 	      solver_solve(solv, &job);
+	      solv->solution_callback = 0;
+	      solv->solution_callback_data = 0;
 	      if (!resultflags)
 		resultflags = TESTCASE_RESULT_TRANSACTION | TESTCASE_RESULT_PROBLEMS;
 	      myresult = testcase_solverresult(solv, resultflags);
+	      if (rescallback && reportsolutiondata.result)
+		{
+		  reportsolutiondata.result = solv_dupjoin(reportsolutiondata.result, myresult, 0);
+		  solv_free(myresult);
+		  myresult = reportsolutiondata.result;
+		}
 	      if (writeresult)
 		{
 		  if (*myresult)
@@ -143,15 +227,43 @@ main(int argc, char **argv)
 	    }
 	  else
 	    {
-	      if (solver_solve(solv, &job))
+	      int pcnt = solver_solve(solv, &job);
+	      if (pcnt && solq.count)
 		{
-		  int problem, solution, pcnt, scnt;
-		  pcnt = solver_problem_count(solv);
+		  int i, taken = 0;
+		  for (i = 0; i < solq.count; i += 2)
+		    {
+		      if (solq.elements[i] > 0 && solq.elements[i] <= pcnt)
+			if (solq.elements[i + 1] > 0 && solq.elements[i + 1] <=  solver_solution_count(solv, solq.elements[i]))
+			  {
+			    printf("problem %d: taking solution %d\n", solq.elements[i], solq.elements[i + 1]);
+			    solver_take_solution(solv, solq.elements[i], solq.elements[i + 1], &job);
+			    taken = 1;
+			  }
+		    }
+		  if (taken)
+		    pcnt = solver_solve(solv, &job);
+		}
+	      if (pcnt)
+		{
+		  int problem, solution, scnt;
 		  printf("Found %d problems:\n", pcnt);
 		  for (problem = 1; problem <= pcnt; problem++)
 		    {
 		      printf("Problem %d:\n", problem);
+#if 1
 		      solver_printprobleminfo(solv, problem);
+#else
+		      {
+			Queue pq;
+			int j;
+			queue_init(&pq);
+			solver_findallproblemrules(solv, problem, &pq);
+			for (j = 0; j < pq.count; j++)
+			  solver_printproblemruleinfo(solv, pq.elements[j]);
+			queue_free(&pq);
+		      }
+#endif
 		      printf("\n");
 		      scnt = solver_solution_count(solv, problem);
 		      for (solution = 1; solution <= scnt; solution++)
@@ -176,5 +288,6 @@ main(int argc, char **argv)
       pool_free(pool);
       fclose(fp);
     }
+  queue_free(&solq);
   exit(ex);
 }

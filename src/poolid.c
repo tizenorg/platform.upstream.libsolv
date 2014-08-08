@@ -54,9 +54,7 @@ pool_strn2id(Pool *pool, const char *str, unsigned int len, int create)
 Id
 pool_rel2id(Pool *pool, Id name, Id evr, int flags, int create)
 {
-  Hashval h;
-  unsigned int hh;
-  Hashmask hashmask;
+  Hashval h, hh, hashmask;
   int i;
   Id id;
   Hashtable hashtbl;
@@ -65,7 +63,7 @@ pool_rel2id(Pool *pool, Id name, Id evr, int flags, int create)
   hashmask = pool->relhashmask;
   hashtbl = pool->relhashtbl;
   ran = pool->rels;
-  
+
   /* extend hashtable if needed */
   if (pool->nrels * 2 > hashmask)
     {
@@ -82,7 +80,7 @@ pool_rel2id(Pool *pool, Id name, Id evr, int flags, int create)
 	  hashtbl[h] = i;
 	}
     }
-  
+
   /* compute hash and check for match */
   h = relhash(name, evr, flags) & hashmask;
   hh = HASHCHAIN_START;
@@ -119,16 +117,14 @@ pool_rel2id(Pool *pool, Id name, Id evr, int flags, int create)
 
 /* Id -> String
  * for rels (returns name only) and strings
- */ 
+ */
 const char *
 pool_id2str(const Pool *pool, Id id)
 {
-  if (ISRELDEP(id))
+  while (ISRELDEP(id))
     {
       Reldep *rd = GETRELDEP(pool, id);
-      if (ISRELDEP(rd->name))
-	return "REL";
-      return pool->ss.stringspace + pool->ss.strings[rd->name];
+      id = rd->name;
     }
   return pool->ss.stringspace + pool->ss.strings[id];
 }
@@ -155,17 +151,26 @@ pool_id2rel(const Pool *pool, Id id)
   rd = GETRELDEP(pool, id);
   switch (rd->flags)
     {
-    case 0: case 2: case 3:
-    case 5: case 6: case 7:
-      return rels[rd->flags];
+    /* debian special cases < and > */
+    /* haiku special cases <> (maybe we should use != for the others as well */
+    case 0: case REL_EQ: case REL_GT | REL_EQ:
+    case REL_LT | REL_EQ: case REL_LT | REL_EQ | REL_GT:
 #if !defined(DEBIAN) && !defined(MULTI_SEMANTICS)
-    case 1: case 4:
+    case REL_LT: case REL_GT:
+#endif
+#if !defined(HAIKU) && !defined(MULTI_SEMANTICS)
+    case REL_LT | REL_GT:
+#endif
       return rels[rd->flags];
-#else
-    case 1:
+#if defined(DEBIAN) || defined(MULTI_SEMANTICS)
+    case REL_GT:
       return pool->disttype == DISTTYPE_DEB ? " >> " : rels[rd->flags];
-    case 4:
+    case REL_LT:
       return pool->disttype == DISTTYPE_DEB ? " << " : rels[rd->flags];
+#endif
+#if defined(HAIKU) || defined(MULTI_SEMANTICS)
+    case REL_LT | REL_GT:
+      return pool->disttype == DISTTYPE_HAIKU ? " != " : rels[rd->flags];
 #endif
     case REL_AND:
       return " & ";
@@ -177,10 +182,16 @@ pool_id2rel(const Pool *pool, Id id)
       return " NAMESPACE ";	/* actually not used in dep2str */
     case REL_ARCH:
       return ".";
+    case REL_MULTIARCH:
+      return ":";
     case REL_FILECONFLICT:
       return " FILECONFLICT ";
     case REL_COND:
       return " IF ";
+    case REL_COMPAT:
+      return " compat >= ";
+    case REL_KIND:
+      return " KIND ";
     default:
       break;
     }
@@ -235,6 +246,15 @@ dep2strcpy(const Pool *pool, char *p, Id id, int oldrel)
 	      strcat(p, ")");
 	      return;
 	    }
+      if (rd->flags == REL_KIND)
+	{
+	  dep2strcpy(pool, p, rd->evr, rd->flags);
+	  p += strlen(p);
+	  *p++ = ':';
+	  id = rd->name;
+	  oldrel = rd->flags;
+	  continue;
+	}
       dep2strcpy(pool, p, rd->name, rd->flags);
       p += strlen(p);
       if (rd->flags == REL_NAMESPACE)

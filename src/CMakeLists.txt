@@ -17,7 +17,7 @@ SET (libsolv_SRCS
     bitmap.c poolarch.c poolvendor.c poolid.c strpool.c dirpool.c
     solver.c solverdebug.c repo_solv.c repo_write.c evr.c pool.c
     queue.c repo.c repodata.c repopage.c util.c policy.c solvable.c
-    transaction.c rules.c problems.c
+    transaction.c rules.c problems.c linkedpkg.c cplxdeps.c
     chksum.c md5.c sha1.c sha2.c solvversion.c selection.c)
 
 SET (libsolv_HEADERS
@@ -28,7 +28,7 @@ SET (libsolv_HEADERS
     chksum.h dataiterator.h ${CMAKE_BINARY_DIR}/src/solvversion.h)
 
 SET (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
-SET (CMAKE_SHARED_LINKER_FLAGS "${LINK_FLAGS} -Wl,--version-script=${CMAKE_SOURCE_DIR}/src/libsolv.ver")
+SET (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${LINK_FLAGS} -Wl,--version-script=${CMAKE_SOURCE_DIR}/src/libsolv.ver")
 
 IF (DISABLE_SHARED)
 ADD_LIBRARY (libsolv STATIC ${libsolv_SRCS})

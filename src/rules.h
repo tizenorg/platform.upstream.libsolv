@@ -63,11 +63,14 @@ typedef enum {
   SOLVER_RULE_JOB = 0x400,
   SOLVER_RULE_JOB_NOTHING_PROVIDES_DEP,
   SOLVER_RULE_JOB_PROVIDED_BY_SYSTEM,
+  SOLVER_RULE_JOB_UNKNOWN_PACKAGE,
+  SOLVER_RULE_JOB_UNSUPPORTED,
   SOLVER_RULE_DISTUPGRADE = 0x500,
   SOLVER_RULE_INFARCH = 0x600,
   SOLVER_RULE_CHOICE = 0x700,
   SOLVER_RULE_LEARNT = 0x800,
-  SOLVER_RULE_BEST = 0x900
+  SOLVER_RULE_BEST = 0x900,
+  SOLVER_RULE_YUMOBS = 0xa00
 } SolverRuleinfo;
 
 #define SOLVER_RULE_TYPEMASK    0xff00
@@ -104,6 +107,7 @@ extern void solver_shrinkrules(struct _Solver *solv, int nrules);
 /* rpm rules */
 extern void solver_addrpmrulesforsolvable(struct _Solver *solv, Solvable *s, Map *m);
 extern void solver_addrpmrulesforweak(struct _Solver *solv, Map *m);
+extern void solver_addrpmrulesforlinked(struct _Solver *solv, Map *m);
 extern void solver_addrpmrulesforupdaters(struct _Solver *solv, Solvable *s, Map *m, int allow_all);
 
 /* update/feature rules */
@@ -124,6 +128,9 @@ extern void solver_disablechoicerules(struct _Solver *solv, Rule *r);
 /* best rules */
 extern void solver_addbestrules(struct _Solver *solv, int havebestinstalljobs);
 
+/* yumobs rules */
+extern void solver_addyumobsrules(struct _Solver *solv);
+
 /* policy rule disabling/reenabling */
 extern void solver_disablepolicyrules(struct _Solver *solv);
 extern void solver_reenablepolicyrules(struct _Solver *solv, int jobidx);
@@ -136,7 +143,12 @@ extern SolverRuleinfo solver_ruleclass(struct _Solver *solv, Id rid);
 extern void solver_ruleliterals(struct _Solver *solv, Id rid, Queue *q);
 extern int  solver_rule2jobidx(struct _Solver *solv, Id rid);
 extern Id   solver_rule2job(struct _Solver *solv, Id rid, Id *whatp);
+extern Id   solver_rule2solvable(struct _Solver *solv, Id rid);
+extern void solver_rule2rules(struct _Solver *solv, Id rid, Queue *q, int recursive);
 
+/* orphan handling */
+extern void solver_breakorphans(struct _Solver *solv);
+extern void solver_check_brokenorphanrules(struct _Solver *solv, Queue *dq);
 
 #ifdef __cplusplus
 }

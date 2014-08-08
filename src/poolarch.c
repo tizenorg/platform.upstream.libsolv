@@ -21,24 +21,31 @@
 #include "util.h"
 
 static const char *archpolicies[] = {
+#ifdef FEDORA
+  "x86_64",	"x86_64:athlon:i686:i586:i486:i386",
+#else
   "x86_64",	"x86_64:i686:i586:i486:i386",
+#endif
   "i686",	"i686:i586:i486:i386",
   "i586",	"i586:i486:i386",
   "i486",	"i486:i386",
   "i386",	"i386",
   "s390x",	"s390x:s390",
   "s390",	"s390",
-  "ia64",	"ia64:i686:i586:i486:i386",
+  "ppc64le",    "ppc64le",
   "ppc64",	"ppc64:ppc",
   "ppc",	"ppc",
-  "armv7tnhl",	"arvm7tnhl:armv7thl:armv7nhl:armv7hl",
-  "armv7thl",	"armv7thl:armv7hl",
-  "armv7nhl",	"armv7nhl:armv7hl",
-  "armv7hl",	"armv7hl",
+  "ppc64p7",	"ppc64p7:ppc64:ppc",
+  "ia64",	"ia64:i686:i586:i486:i386",
+  "aarch64",	"aarch64",
+  "armv6hl",	"armv6hl",
+  "armv7hnl",	"armv7hnl:armv7hl:armv6hl",
+  "armv7hl",	"armv7hl:armv6hl",
   "armv7l",	"armv7l:armv6l:armv5tejl:armv5tel:armv5l:armv4tl:armv4l:armv3l",
   "armv6l",	"armv6l:armv5tejl:armv5tel:armv5l:armv4tl:armv4l:armv3l",
   "armv5tejl",	"armv5tejl:armv5tel:armv5l:armv4tl:armv4l:armv3l",
   "armv5tel",	"armv5tel:armv5l:armv4tl:armv4l:armv3l",
+  "armv5tl",	"armv5l:armv4tl:armv4l:armv3l",
   "armv5l",	"armv5l:armv4tl:armv4l:armv3l",
   "armv4tl",	"armv4tl:armv4l:armv3l",
   "armv4l",	"armv4l:armv3l",
@@ -52,6 +59,16 @@ static const char *archpolicies[] = {
   "sparcv9",	"sparcv9:sparcv8:sparc",
   "sparcv8",	"sparcv8:sparc",
   "sparc",	"sparc",
+  "mipsel",	"mipsel",
+  "m68k",	"m68k",
+#ifdef FEDORA
+  "ia32e",	"ia32e:x86_64:athlon:i686:i586:i486:i386",
+  "athlon",	"athlon:i686:i586:i486:i386",
+  "amd64",	"amd64:x86_64:athlon:i686:i586:i486:i386",
+  "geode",	"geode:i586:i486:i386",
+  "ppc64iseries", "ppc64iseries:ppc64:ppc",
+  "ppc64pseries", "ppc64pseries:ppc64:ppc",
+#endif
   0
 };
 

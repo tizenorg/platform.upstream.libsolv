@@ -7,7 +7,7 @@
 
 /*
  * dataiterator.h
- * 
+ *
  */
 
 #ifndef LIBSOLV_DATAITERATOR_H
@@ -15,6 +15,10 @@
 
 #include "pooltypes.h"
 #include "pool.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct _Repo;
 
@@ -79,12 +83,12 @@ int  datamatcher_checkbasename(Datamatcher *ma, const char *str);
 
 /*
  * Dataiterator
- * 
+ *
  * Iterator like interface to 'search' functionality
- * 
+ *
  * Dataiterator is per-pool, additional filters can be applied
  * to limit the search domain. See dataiterator_init below.
- * 
+ *
  * Use these like:
  *    Dataiterator di;
  *    dataiterator_init(&di, repo->pool, repo, 0, 0, "bla", SEARCH_SUBSTRING);
@@ -147,7 +151,7 @@ typedef struct _Dataiterator
 
 /*
  * Initialize dataiterator
- * 
+ *
  * di:      Pointer to Dataiterator to be initialized
  * pool:    Search domain for the iterator
  * repo:    if non-null, limit search to this repo
@@ -181,5 +185,9 @@ void dataiterator_strdup(Dataiterator *di);
 #define DI_SEEK_CHILD   1
 #define DI_SEEK_PARENT  2
 #define DI_SEEK_REWIND  3
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBSOLV_DATAITERATOR_H */

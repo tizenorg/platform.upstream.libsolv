@@ -4,18 +4,6 @@
 
 ADD_LIBRARY (toolstuff STATIC common_write.c)
 
-# as we link with --as-needed we do not get bogus dependencies
-SET (SYSTEM_LIBRARIES ${EXPAT_LIBRARY} ${ZLIB_LIBRARY})
-IF (ENABLE_LZMA_COMPRESSION)
-SET (SYSTEM_LIBRARIES ${SYSTEM_LIBRARIES} ${LZMA_LIBRARY})
-ENDIF (ENABLE_LZMA_COMPRESSION)
-IF (ENABLE_BZIP2_COMPRESSION)
-SET (SYSTEM_LIBRARIES ${SYSTEM_LIBRARIES} ${BZIP2_LIBRARIES})
-ENDIF (ENABLE_BZIP2_COMPRESSION)
-IF (ENABLE_RPMDB)
-SET (SYSTEM_LIBRARIES ${RPMDB_LIBRARY} ${SYSTEM_LIBRARIES})
-ENDIF (ENABLE_RPMDB)
-
 SET (tools_list mergesolv dumpsolv installcheck testsolv)
 
 IF (ENABLE_RPMDB)
@@ -100,8 +88,17 @@ ENDIF (ENABLE_CUDFREPO)
 ADD_EXECUTABLE (installcheck installcheck.c)
 TARGET_LINK_LIBRARIES (installcheck libsolvext libsolv ${SYSTEM_LIBRARIES})
 
+IF (SUSE)
 ADD_EXECUTABLE (patchcheck patchcheck.c)
 TARGET_LINK_LIBRARIES (patchcheck libsolvext libsolv ${SYSTEM_LIBRARIES})
+ENDIF (SUSE)
+
+IF (ENABLE_APPDATA)
+ADD_EXECUTABLE (appdata2solv appdata2solv.c)
+TARGET_LINK_LIBRARIES (appdata2solv toolstuff libsolvext libsolv ${SYSTEM_LIBRARIES})
+
+SET (tools_list ${tools_list} appdata2solv)
+ENDIF (ENABLE_APPDATA)
 
 ADD_EXECUTABLE (dumpsolv dumpsolv.c )
 TARGET_LINK_LIBRARIES (dumpsolv libsolv)

@@ -7,13 +7,13 @@
 
 /*
  * repodata.h
- * 
+ *
  */
 
 #ifndef LIBSOLV_REPODATA_H
 #define LIBSOLV_REPODATA_H
 
-#include <stdio.h> 
+#include <stdio.h>
 
 #include "pooltypes.h"
 #include "pool.h"
@@ -23,9 +23,16 @@
 #include "repopage.h"
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define SIZEOF_MD5	16
 #define SIZEOF_SHA1	20
+#define SIZEOF_SHA224	28
 #define SIZEOF_SHA256	32
+#define SIZEOF_SHA384	48
+#define SIZEOF_SHA512	64
 
 struct _Repo;
 struct _KeyValue;
@@ -191,9 +198,9 @@ repodata_has_keyname(Repodata *data, Id keyname)
  * Call <callback> for each match */
 void repodata_search(Repodata *data, Id solvid, Id keyname, int flags, int (*callback)(void *cbdata, Solvable *s, Repodata *data, Repokey *key, struct _KeyValue *kv), void *cbdata);
 
-/* Make sure the found KeyValue has the "str" field set. Return false
- * if not possible */
-int repodata_stringify(Pool *pool, Repodata *data, Repokey *key, struct _KeyValue *kv, int flags);
+/* Make sure the found KeyValue has the "str" field set. Return "str"
+ * if valid, NULL if not possible */
+const char *repodata_stringify(Pool *pool, Repodata *data, Repokey *key, struct _KeyValue *kv, int flags);
 
 int repodata_filelistfilter_matches(Repodata *data, const char *str);
 
@@ -206,6 +213,7 @@ int repodata_lookup_num(Repodata *data, Id solvid, Id keyname, unsigned long lon
 int repodata_lookup_void(Repodata *data, Id solvid, Id keyname);
 const unsigned char *repodata_lookup_bin_checksum(Repodata *data, Id solvid, Id keyname, Id *typep);
 int repodata_lookup_idarray(Repodata *data, Id solvid, Id keyname, Queue *q);
+const void *repodata_lookup_binary(Repodata *data, Id solvid, Id keyname, int *lenp);
 
 
 /*-----
@@ -266,7 +274,7 @@ void repodata_add_flexarray(Repodata *data, Id solvid, Id keyname, Id ghandle);
 void repodata_unset(Repodata *data, Id solvid, Id keyname);
 void repodata_unset_uninternalized(Repodata *data, Id solvid, Id keyname);
 
-/* 
+/*
  merge/swap attributes from one solvable to another
  works only if the data is not yet internalized
 */
@@ -274,8 +282,7 @@ void repodata_merge_attrs(Repodata *data, Id dest, Id src);
 void repodata_merge_some_attrs(Repodata *data, Id dest, Id src, Map *keyidmap, int overwrite);
 void repodata_swap_attrs(Repodata *data, Id dest, Id src);
 
-void repodata_create_stubs(Repodata *data);
-void repodata_join(Repodata *data, Id joinkey);
+Repodata *repodata_create_stubs(Repodata *data);
 
 /*
  * load all paged data, used to speed up copying in repo_rpmdb
@@ -285,6 +292,8 @@ void repodata_disable_paging(Repodata *data);
 /* helper functions */
 Id repodata_globalize_id(Repodata *data, Id id, int create);
 Id repodata_localize_id(Repodata *data, Id id, int create);
+Id repodata_translate_id(Repodata *data, Repodata *fromdata, Id id, int create);
+
 Id repodata_str2dir(Repodata *data, const char *dir, int create);
 const char *repodata_dir2str(Repodata *data, Id did, const char *suf);
 const char *repodata_chk2str(Repodata *data, Id type, const unsigned char *buf);
@@ -295,5 +304,9 @@ Id repodata_lookup_id_uninternalized(Repodata *data, Id solvid, Id keyname, Id v
 
 /* stats */
 unsigned int repodata_memused(Repodata *data);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* LIBSOLV_REPODATA_H */

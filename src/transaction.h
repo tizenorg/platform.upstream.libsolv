@@ -13,13 +13,13 @@
 #ifndef LIBSOLV_TRANSACTION_H
 #define LIBSOLV_TRANSACTION_H
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include "pooltypes.h"
 #include "queue.h"
 #include "bitmap.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 struct _Pool;
 struct _DUChanges;
@@ -34,7 +34,7 @@ typedef struct _Transaction {
   Queue transaction_info;
   Id *transaction_installed;
   Map transactsmap;
-  Map noobsmap;
+  Map multiversionmap;
 
   struct _TransactionOrderdata *orderdata;
 #endif
@@ -77,6 +77,8 @@ typedef struct _Transaction {
 
 #define SOLVER_TRANSACTION_KEEP_PSEUDO		(1 << 8)
 
+#define SOLVER_TRANSACTION_OBSOLETE_IS_UPGRADE  (1 << 9)
+
 /* extra classifications */
 #define SOLVER_TRANSACTION_ARCHCHANGE		0x100
 #define SOLVER_TRANSACTION_VENDORCHANGE		0x101
@@ -85,7 +87,7 @@ typedef struct _Transaction {
 #define SOLVER_TRANSACTION_KEEP_ORDERDATA	(1 << 0)
 
 extern Transaction *transaction_create(struct _Pool *pool);
-extern Transaction *transaction_create_decisionq(struct _Pool *pool, Queue *decisionq, Map *noobsmap);
+extern Transaction *transaction_create_decisionq(struct _Pool *pool, Queue *decisionq, Map *multiversionmap);
 extern Transaction *transaction_create_clone(Transaction *srctrans);
 extern void transaction_free(Transaction *trans);
 extern void transaction_free_orderdata(Transaction *trans);
@@ -114,7 +116,7 @@ void transaction_calc_duchanges(Transaction *trans, struct _DUChanges *mps, int 
 /* order a transaction */
 extern void transaction_order(Transaction *trans, int flags);
 
-/* roll your own order funcion: 
+/* roll your own order funcion:
  * add pkgs free for installation to queue choices after chosen was
  * installed. start with chosen = 0
  * needs an ordered transaction created with SOLVER_TRANSACTION_KEEP_ORDERDATA */

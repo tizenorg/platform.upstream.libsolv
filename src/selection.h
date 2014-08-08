@@ -7,13 +7,17 @@
 
 /*
  * selection.h
- * 
+ *
  */
 
 #ifndef LIBSOLV_SELECTION_H
 #define LIBSOLV_SELECTION_H
 
 #include "pool.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define SELECTION_NAME			(1 << 0)
 #define SELECTION_PROVIDES		(1 << 1)
@@ -28,10 +32,19 @@
 #define SELECTION_NOCASE		(1 << 11)
 #define SELECTION_SOURCE_ONLY		(1 << 12)
 #define SELECTION_WITH_SOURCE		(1 << 13)
+#define SELECTION_SKIP_KIND		(1 << 14)
 
 extern int  selection_make(Pool *pool, Queue *selection, const char *name, int flags);
+extern int  selection_make_matchdeps(Pool *pool, Queue *selection, const char *name, int flags, int keyname, int marker);
+
 extern void selection_filter(Pool *pool, Queue *sel1, Queue *sel2);
 extern void selection_add(Pool *pool, Queue *sel1, Queue *sel2);
 extern void selection_solvables(Pool *pool, Queue *selection, Queue *pkgs);
+
+extern const char *pool_selection2str(Pool *pool, Queue *selection, Id flagmask);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
