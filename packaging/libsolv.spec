@@ -109,6 +109,8 @@ python %py_libdir/py_compile.py *.py
 python -O %py_libdir/py_compile.py *.py
 popd
 %endif
+
+%remove_docs
 # we want to leave the .a file untouched
 export NO_BRP_STRIP_DEBUG=true
 
