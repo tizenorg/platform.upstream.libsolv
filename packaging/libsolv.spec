@@ -1,5 +1,5 @@
 Name:           libsolv
-Version:        0.3.0
+Version:        0.6.4
 Release:        0
 Url:            https://github.com/openSUSE/libsolv
 Source:         libsolv-%{version}.tar.bz2
